@@ -24,6 +24,9 @@ project owner tests on hardware.
 
 ## New on Ubuntu (not a concern on the original Windows setup)
 
+`scripts/setup-ubuntu.sh` installs this rule for you; the rest of this section is
+what it does and why, for when it needs adjusting.
+
 `adb devices` may show the tablet as `unauthorized`, or not list it at all,
 until a udev rule exists for the vendor ID. If so:
 

@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "characters": [
+    {
+      "id": "placeholder",
+      "name": "Placeholder",
+      "base_image": "characters/placeholder.png",
+      "snap_points": [
+        { "id": "head",       "category": "hat",       "x": 0.500, "y": 0.120 },
+        { "id": "hair",       "category": "hair",      "x": 0.500, "y": 0.150 },
+        { "id": "torso",      "category": "top",       "x": 0.500, "y": 0.400 },
+        { "id": "legs",       "category": "bottom",    "x": 0.500, "y": 0.650 },
+        { "id": "body",       "category": "dress",     "x": 0.500, "y": 0.520 },
+        { "id": "feet",       "category": "shoes",     "x": 0.500, "y": 0.900 },
+        { "id": "hand-right", "category": "weapon",    "x": 0.740, "y": 0.480 },
+        { "id": "hand-left",  "category": "shield",    "x": 0.260, "y": 0.480 },
+        { "id": "neck",       "category": "accessory", "x": 0.500, "y": 0.270 },
+        { "id": "back",       "category": "wings",     "x": 0.500, "y": 0.400 }
+      ]
+    }
+  ]
+}

@@ -1,81 +1,88 @@
 # Session bootstrap — Dress-me-up
 
-Read this before touching anything else. It tells you what exists, what
-doesn't, and the one concrete next step.
+Read this before touching anything else. It tells you what exists, what doesn't,
+and the one concrete next step.
+
+*Updated 2026-08-25: a rebuild was grafted into this repo. The seed-only status
+this file previously described is out of date — see below.*
 
 ## What actually exists right now
 
-- **This seed repo.** Docs only: [`ROADMAP.md`](ROADMAP.md) (architecture +
-  build order + current state) and [`TESTING.md`](TESTING.md) (why the
-  physical tablet, not the emulator).
-- **Nothing else.** No app code, no `catalog.json`, no `characters.json`, no
-  `decisions.md` (referenced in the roadmap as KTD-11..14, content not
-  recovered — treat those IDs as "a decision was made here, re-derive the
-  reasoning from the roadmap text around it if it matters").
+- **A rebuilt vertical slice**, grafted in on 2026-08-25 from a scaffold that was
+  written against this repo's own spec. Not the original code — the original is
+  gone (KTD-15).
+  - `tools/` — the content pipeline. **Real and tested: 48 passing tests**, and
+    the full chain has been run end to end against a synthetic sticker sheet.
+  - `app/` — Kotlin/Compose. **Never compiled.** This machine had no JDK and no
+    Android SDK when it was written, so treat every `.kt` file as unreviewed
+    first-draft code and expect real errors on the first build.
+- **The recovered docs** — [`ROADMAP.md`](ROADMAP.md), [`TESTING.md`](TESTING.md).
+  These describe the **lost original**, not this tree. Where the two disagree,
+  neither is automatically right.
+- **[`memory/decisions.md`](memory/decisions.md)** — KTD-11..14 are
+  *reconstructions*, clearly marked as such; their original text never survived.
+  KTD-15 onward are real decisions made on this machine.
 
-Everything below is a **spec to rebuild from**, not a working checkout.
+Still missing: the scanned PDFs, the 219 QA'd items, and a real
+`characters.json`.
 
-## Recommended path convention
+## Path convention
 
-Clone this repo to `~/projects/personal/dress-me-up` on the new machine.
-This mirrors the convention already established for sibling personal
-projects (`trader` at `~/projects/personal/trader`, `android_racer` at
-`C:\projects\personal\android_racer` on Windows) — keeping it consistent
-matters if you ever use Claude Code's per-project memory again, since it
-hashes the absolute path.
+This repo lives at `~/projects/personal/dress-me-up` (KTD-17). Keep it there —
+Claude Code hashes the absolute project path for per-project memory, so moving
+the tree silently orphans it.
 
 ## Toolchain (Ubuntu)
 
-The original build ran on Windows. Known-good versions, translated to
-Ubuntu equivalents:
+**Run [`../scripts/setup-ubuntu.sh`](../scripts/setup-ubuntu.sh).** It installs
+JDK 21, the Android SDK cmdline-tools into `~/Android/Sdk`, platform-tools,
+`android-34`, build-tools, writes `local.properties`, adds the udev rule, and
+builds the Python venv. Re-runnable; `--check` reports without changing anything.
 
-- **JDK 21** — `sudo apt install openjdk-21-jdk` (the original used JDK 21
-  OpenLogic on Windows; any JDK 21 distribution should work).
-- **Android SDK** — install via `cmdline-tools` to `~/Android/Sdk` (Ubuntu's
-  usual default; the Windows original used `%LOCALAPPDATA%\Android\Sdk`).
-  Pin **build-tools 36.1.0** — the original notes that 34.0.0 was corrupted
-  on the Windows install and 36.1.0 is what actually worked. Worth trying
-  34.0.0 fresh on Ubuntu since that may have been an install-specific
-  corruption, but don't be surprised if you reach for 36.1.0 again.
-- **Gradle** — no wrapper exists yet (no `gradlew` was carried over). Use
-  Gradle 8.9 to match what the original project pinned once you scaffold
-  the project (`gradle wrapper --gradle-version 8.9`).
-- **`local.properties`** (gitignored) must point `sdk.dir` at the SDK path.
+Notes it encodes, so you do not have to remember them:
 
-## Testing — new Ubuntu-specific step
+- **build-tools:** tries **34.0.0** first (matches `compileSdk 34`) and falls
+  back to **36.1.0**. The original pinned 36.1.0 only because 34.0.0 was
+  corrupted in its Windows SDK install — probably install-specific, so this tries
+  the clean version first and warns if the result disagrees with
+  `app/build.gradle.kts`.
+- **Gradle:** the wrapper is committed (8.9). No `gradle wrapper` step needed.
+- **JDK:** the app targets Java 17 bytecode, so JDK 21 runs the build fine.
 
-The original testing method transfers directly: physical **Galaxy Tab S6
-Lite over `adb`**, never the emulator (see
-[`TESTING.md`](TESTING.md)). One thing to check that's new on Linux: `adb
-devices` may show the tablet as `unauthorized` or not at all until a udev
-rule is added for the device vendor ID — if so, add a rule under
-`/etc/udev/rules.d/51-android.udev.rules` and reload udev
-(`sudo udevadm control --reload-rules`), then reconnect and accept the
-USB-debugging RSA prompt on the tablet. This wasn't a concern on Windows.
+## Testing
+
+Physical **Galaxy Tab S6 Lite over `adb`**, never the emulator — see
+[`TESTING.md`](TESTING.md). The udev rule the setup script installs is what makes
+`adb devices` see the tablet on Linux; you still have to accept the RSA prompt on
+the tablet itself.
 
 ## First concrete task
 
-There is no playable slice to resume — the app itself doesn't exist here.
-Per [`ROADMAP.md`](ROADMAP.md), the build order was deliberately
-**vertical-slice first**: pipeline → catalog → app → snap contract, before
-any content-completion work. Re-scaffold in that order rather than jumping
-to content or polish:
+The slice from the roadmap's step 1–2 now exists. What remains, in order:
 
-1. Fresh Compose Android project (models + `CatalogRepository` +
-   `DressUpViewModel` + `CharacterCanvas` + `SnapCalculator`, per the
-   architecture in `ROADMAP.md`).
-2. `tools/build_catalog.py` — aggregates accepted content sidecars into
-   `app/src/main/assets/catalog.json` + downsampled `items/`.
-3. Hand-author `app/src/main/assets/characters.json` — pick a real
-   base-body image, place snap points in normalized 0–1 coordinates by
-   *looking* at it. This was the single remaining manual step before the
-   original had a real playable slice, and it still is.
-4. Test on the physical tablet per `TESTING.md`.
+1. **Run `scripts/setup-ubuntu.sh`**, then `./gradlew :app:testDebugUnitTest`.
+   This is the first time the Kotlin will ever have been compiled — fixing what
+   that surfaces is the immediate job, and it is not expected to be clean.
+2. **Get the scans in.** They live in Google Drive. Drop the PDFs into
+   `content/pdfs/` (gitignored), then:
+   `tools/.venv/bin/python tools/extract_pdf.py content/pdfs/*.pdf`
+   → `classify_and_qa.py` → `build_catalog.py`.
+   With no PDFs, `tools/make_smoke_pdf.py` generates a synthetic stand-in that
+   exercises the whole chain.
+3. **Hand-author `app/src/main/assets/characters.json`** — pick a real base body
+   and place snap points in normalized 0–1 coordinates *by looking at the image*.
+   Guide: `app/src/main/assets/README.md`. Still the single manual step between a
+   compiling app and a playable one. Still not automatable.
+4. **Test on the tablet** per `TESTING.md`.
 
-## What's deliberately not here
+## Known divergences from the original
 
-- Source content (the "Dress Me Up" sticker book scans/PDFs) — not part of
-  Claude's memory capture, recover from wherever the physical books were
-  scanned, if that archive still exists.
-- The actual `decisions.md` reasoning behind KTD-11..14 — only referenced,
-  never captured verbatim.
+- **Segmentation.** The original used **SAM**, and its `--min-quality` filtered
+  SAM's mask confidence. This tree thresholds and scores the cutout instead, so
+  `--min-quality 0.90` here is **a different measurement** — the recovered "219
+  items at 0.90" is not a number this pipeline can be expected to reproduce.
+  `Segmenter` in `dressup_pipeline/extract.py` is the seam SAM drops into; trying
+  it (possibly on rented GPU) is an open experiment. KTD-16.
+- **`app/src/main/assets/items/`** is gitignored while the only content is
+  synthetic. Revisit once real scans are extracted: the scans are not in git, so
+  the generated assets are what a future clone would need in order to build.

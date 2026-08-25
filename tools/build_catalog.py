@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Aggregate accepted sidecars into the app's catalog.json + item PNGs.
+
+    python tools/build_catalog.py --min-quality 0.90 --group fantasy --group knight
+
+Writes into app/src/main/assets/ by default — the only directory the app reads.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from dressup_pipeline.catalog import DEFAULT_MAX_PX, build_catalog
+from dressup_pipeline.models import GROUPS
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_SIDECARS = REPO_ROOT / "content" / "sidecars"
+DEFAULT_ASSETS = REPO_ROOT / "app" / "src" / "main" / "assets"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--sidecars", type=Path, default=DEFAULT_SIDECARS, help="sidecar root (default: content/sidecars)")
+    parser.add_argument("--assets", type=Path, default=DEFAULT_ASSETS, help="asset output dir (default: app/src/main/assets)")
+    parser.add_argument("--min-quality", type=float, default=0.90, help="reject items scoring below this (default: 0.90)")
+    parser.add_argument("--group", action="append", choices=GROUPS, dest="groups", help="restrict to a group; repeatable")
+    parser.add_argument("--max-px", type=int, default=DEFAULT_MAX_PX, help=f"longest edge after downsampling (default: {DEFAULT_MAX_PX})")
+    args = parser.parse_args(argv)
+
+    if not args.sidecars.is_dir():
+        parser.error(f"sidecar root does not exist: {args.sidecars}")
+    if not 0.0 <= args.min_quality <= 1.0:
+        parser.error("--min-quality must be between 0.0 and 1.0")
+
+    summary = build_catalog(
+        sidecar_root=args.sidecars,
+        assets_dir=args.assets,
+        min_quality=args.min_quality,
+        groups=set(args.groups) if args.groups else None,
+        max_px=args.max_px,
+    )
+    print(summary.as_report())
+
+    if summary.written == 0:
+        print("\nno items written — the app will start with an empty catalog", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

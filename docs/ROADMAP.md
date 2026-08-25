@@ -20,6 +20,11 @@ content was not captured in memory and has not survived. Treat the
 reasoning above (avoid discovering an architecture problem after investing
 in full content QA) as the best available reconstruction of *why*.
 
+> **Status note (2026-08-25):** everything below describes the **lost original**.
+> A rebuild now exists in this repo — see [`session-bootstrap.md`](session-bootstrap.md)
+> for what actually exists today. This section is kept as recovered history, not
+> as a description of the current tree.
+
 ## Done as of 2026-07-02 (Phase 0–1)
 
 - **`tools/build_catalog.py`** — aggregates accepted content sidecars into
@@ -65,3 +70,31 @@ JDK 21, Android SDK at `%LOCALAPPDATA%\Android\Sdk`, **build-tools 36.1.0**
 (34.0.0 was corrupted on that install), Gradle 8.9 wrapper. `local.properties`
 (gitignored) pointed at the SDK. See
 [`session-bootstrap.md`](session-bootstrap.md) for the Ubuntu translation.
+
+
+---
+
+## Current state (2026-08-25, rebuild)
+
+Phase 0–1 has been **re-achieved from this spec**, not recovered:
+
+- **Pipeline** — `tools/`, 48 passing tests, full chain verified end to end on a
+  synthetic sticker sheet. Four stages, sidecar-based: `extract_pdf.py` →
+  `classify_and_qa.py` → `build_catalog.py`, with `make_smoke_pdf.py` standing in
+  for a scan.
+- **App** — `app/`, Kotlin/Compose, mirroring the recovered architecture
+  (`CatalogRepository`, `DressUpViewModel`, `CharacterCanvas`, `SnapCalculator`
+  with 11 tests). **Never compiled** — no JDK or Android SDK existed on the
+  machine when it was written.
+- **Not recovered:** the scans, the 219 items, a real `characters.json`.
+
+Phase 2–4 are unchanged and still ahead. The blocking manual step — authoring
+`characters.json` — is exactly where the original stopped.
+
+### Divergence worth knowing
+
+The original segmented with **SAM** and filtered on SAM's `quality_score`. The
+rebuild thresholds and scores the cutout instead, so its `--min-quality` is a
+different measurement (KTD-16). "219 items at 0.90" is therefore not a
+reproducible target for this pipeline. SAM remains an open experiment, with a
+`Segmenter` seam ready for it.
