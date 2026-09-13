@@ -15,10 +15,11 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
-# Working content — scans and intermediates are large and are not the source of
-# truth for the app. Only the generated catalog under app/src/main/assets ships.
-content/pdfs/
-content/sidecars/
+# Working content — scans and intermediates. Large, binary, and regenerable from
+# Drive; only the generated catalog under app/src/main/assets ships.
+# content/README.md is kept so the directory documents itself.
+content/*
+!content/README.md
 
 .DS_Store
 
@@ -26,3 +27,9 @@ content/sidecars/
 # synthetic smoke-test output — revisit once real scans are extracted, since the
 # scans themselves are not in git and the APK needs these to ship.
 app/src/main/assets/items/
+
+# Playtest rig — instrumentation for observing a child using the design prototypes.
+# Deliberately NOT tracked: the shipped app declares zero permissions and collects
+# nothing, and this must never be able to ride into a commit. It lives here only so it
+# survives a reboot; see playtest-rig/BOUNDARY.md section 2 for the containment rules.
+/playtest-rig/
