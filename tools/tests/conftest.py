@@ -28,6 +28,24 @@ def make_item_image(width=300, height=400, alpha=255, margin=40):
     return image
 
 
+def make_border_doll_page():
+    """The orientation tests' doll page: a figure between two bleeding border strips.
+
+    Head-heavy and shoulder-wide on purpose. Shared with the triage tests so that
+    the page both stages are pinned against is literally the same one.
+    """
+    page = Image.new("RGB", (660, 700), "white")
+    draw = ImageDraw.Draw(page)
+    draw.rectangle([0, 0, 90, 700], fill=(60, 110, 70))      # decoration, off the left edge
+    draw.rectangle([570, 0, 660, 700], fill=(70, 90, 140))   # decoration, off the right edge
+    draw.rectangle([325, 130, 365, 350], fill=(226, 188, 160))   # torso
+    draw.rectangle([300, 150, 390, 195], fill=(226, 188, 160))   # outstretched arms — widest
+    draw.rectangle([328, 350, 342, 660], fill=(226, 188, 160))   # legs
+    draw.rectangle([348, 350, 362, 660], fill=(226, 188, 160))
+    draw.ellipse([320, 40, 370, 140], fill=(45, 30, 25))         # head — darkest
+    return page
+
+
 def make_doll_page(size=(600, 800), dolls=((260, 60, 340, 760),), border=True):
     """A base-body page the way the scans are: dolls on a smooth colour wash.
 

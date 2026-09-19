@@ -38,6 +38,10 @@ import numpy as np
 from PIL import Image
 from scipy import ndimage
 
+# Pixels at or above this luminance are paper, not artwork. Imported rather than
+# restated so that "the page content" cannot come to mean one thing here and
+# another in extract.py.
+from .extract import DEFAULT_PAPER_THRESHOLD as PAPER_THRESHOLD
 from .models import BBox
 
 # Everything below is measured at this longest-side pixel size, so a page renders
@@ -45,10 +49,6 @@ from .models import BBox
 # pixel structuring elements, and at much less than this the closing starts
 # welding a doll onto the decoration behind it.
 WORK_SIZE = 1200
-
-# Pixels at or above this luminance are paper, not artwork. Matches extract.py so
-# that "the page content" means the same thing in both stages.
-PAPER_THRESHOLD = 240
 
 # Local standard deviation over this window separates drawn artwork from the
 # smooth background washes. 6 grey levels is well above scanner noise on these
@@ -139,8 +139,8 @@ class Orientation:
     None when no figure was found, which is the normal case for item sheets.
     """
 
-    figure: tuple[int, int, int, int] | None
-    """The figure's (x, y, w, h) in working-scale pixels, for debugging."""
+    figure: BBox | None
+    """The figure's bounding box in working-scale pixels, for debugging."""
 
 
 def detect_orientation(image: Image.Image) -> int:
@@ -185,7 +185,7 @@ def measure_orientation(image: Image.Image) -> Orientation:
         return Orientation(90 if sideways else 0, axis, None, None)
 
     head = _head_position(figure, sideways)
-    box = (figure.x, figure.y, figure.w, figure.h)
+    box = BBox(figure.x, figure.y, figure.w, figure.h)
     if abs(head - 0.5) < HEAD_DECISION:
         return Orientation(90 if sideways else 0, axis, head, box)
 

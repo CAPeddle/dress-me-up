@@ -55,18 +55,23 @@ FACTOR_PLACES = 4
 
 @dataclass(frozen=True)
 class ScaleDecision:
-    """The one factor a build applies to every image, and which bound chose it."""
+    """The one factor a build applies to every image, and which bound chose it.
+
+    `source_dpi` rides along because it is written in the same block: the factor
+    only means something against the resolution the images were rendered at.
+    """
 
     factor: float
     bound: str  # "target_height", "item_ceiling", or "clamped"
     target_body_height_px: int
     item_ceiling_px: int
+    source_dpi: int = 0
 
-    def to_dict(self, source_dpi: int) -> dict[str, object]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "target_body_height_px": self.target_body_height_px,
             "factor": self.factor,
-            "source_dpi": source_dpi,
+            "source_dpi": self.source_dpi,
             "bound": self.bound,
             "item_ceiling_px": self.item_ceiling_px,
         }
@@ -77,6 +82,7 @@ def compute_scale(
     item_edges: list[int],
     target_body_height: int,
     item_ceiling: int = ITEM_CEILING_PX,
+    source_dpi: int = 0,
 ) -> ScaleDecision:
     """The factor for one build: the smaller of the two ratios, never above one.
 
@@ -103,6 +109,7 @@ def compute_scale(
         bound=bound,
         target_body_height_px=target_body_height,
         item_ceiling_px=item_ceiling,
+        source_dpi=source_dpi,
     )
 
 
@@ -133,7 +140,6 @@ class BuildSummary:
     bodies: int = 0
     rows: dict[tuple[str, str], SourceRow] = field(default_factory=dict)
     scale: ScaleDecision | None = None
-    source_dpi: int = 0
     tallest_body: int = 0
     largest_item_edge: int = 0
 
@@ -170,7 +176,7 @@ class BuildSummary:
             lines.append(
                 f"  scale: x{self.scale.factor} chosen by {self.scale.bound}"
                 f" — target body height {self.scale.target_body_height_px}px,"
-                f" item ceiling {self.scale.item_ceiling_px}px, source dpi {self.source_dpi}"
+                f" item ceiling {self.scale.item_ceiling_px}px, source dpi {self.scale.source_dpi}"
             )
             lines.append(
                 f"         decided by tallest body {self.tallest_body or '-'}px"
@@ -208,6 +214,22 @@ def _eligible(sidecar: Sidecar, min_quality: float, groups: set[str] | None) -> 
     return None
 
 
+@dataclass(frozen=True)
+class BodiesSource:
+    """Where the Base Bodies of a build come from — all three parts of one answer.
+
+    A list, the scan root its PDFs are found under, and the triage directory
+    holding their rotations. They are one argument because they only mean
+    anything together: a list on its own names PDFs nobody can locate and pages
+    nobody knows which way up. Saying so in the type retires the hand-written
+    "a bodies list needs both source_root and triage_dir" check.
+    """
+
+    list_path: Path
+    source_root: Path
+    triage_dir: Path
+
+
 @dataclass
 class _Candidate:
     """An eligible Item, measured but not yet written."""
@@ -236,12 +258,12 @@ def _gather(
             continue
 
         source_image = path.parent / sidecar.image
-        if not source_image.exists():
+        try:
+            with Image.open(source_image) as image:
+                width, height = image.size
+        except FileNotFoundError:
             summary.skip("image missing on disk")
             continue
-
-        with Image.open(source_image) as image:
-            width, height = image.size
 
         assert sidecar.category and sidecar.group
         candidates.append(_Candidate(sidecar, source_image, width, height))
@@ -257,23 +279,17 @@ def build_catalog(
     min_quality: float = 0.90,
     groups: set[str] | None = None,
     target_body_height: int = DEFAULT_BODY_HEIGHT_PX,
-    bodies_list: Path | None = None,
-    source_root: Path | None = None,
-    triage_dir: Path | None = None,
+    bodies: BodiesSource | None = None,
 ) -> BuildSummary:
     """Write `catalog.json` + scaled item PNGs into `assets_dir`.
 
-    With `bodies_list`, also cut the listed Base Bodies (which needs
-    `source_root` for the PDFs and `triage_dir` for their rotations) and write
-    `bodies.json` + `bodies/<id>.png` beside the catalog. An item group that
-    made it into the catalog with no body to dress is a `BodyError`.
+    With `bodies`, also cut the Base Bodies it lists and write `bodies.json` +
+    `bodies/<id>.png` beside the catalog. An item group that made it into the
+    catalog with no body to dress is a `BodyError`.
 
     Nothing is written until the bodies are cut, because the factor every image
     is scaled by depends on the tallest of them (KTD4).
     """
-    if bodies_list is not None and (source_root is None or triage_dir is None):
-        raise ValueError("a bodies list needs both source_root and triage_dir")
-
     items_dir = assets_dir / ITEMS_SUBDIR
     items_dir.mkdir(parents=True, exist_ok=True)
 
@@ -284,11 +300,12 @@ def build_catalog(
 
     cuts: list[BodyCut] = []
     source_dpi: int | None = None
-    listed_groups = {entry.group for entry in load_body_list(bodies_list)} if bodies_list else set()
+    entries = load_body_list(bodies.list_path) if bodies is not None else []
+    listed_groups = {entry.group for entry in entries}
     if listed_groups:
-        assert bodies_list is not None and source_root is not None and triage_dir is not None
-        _refuse_unbodied_groups(bodies_list, set(summary.by_group), listed_groups)
-        cuts, source_dpi = build_bodies(bodies_list, source_root, sidecar_root, triage_dir)
+        assert bodies is not None
+        _refuse_unbodied_groups(bodies.list_path, set(summary.by_group), listed_groups)
+        cuts, source_dpi = build_bodies(entries, bodies.source_root, sidecar_root, bodies.triage_dir)
         for cut in cuts:
             summary.row(cut.group, cut.source_pdf).body_heights.append(cut.image.height)
     if source_dpi is None:
@@ -299,9 +316,9 @@ def build_catalog(
         body_heights=[cut.image.height for cut in cuts],
         item_edges=[candidate.longest_edge for candidate in candidates],
         target_body_height=target_body_height,
+        source_dpi=source_dpi,
     )
     summary.scale = decision
-    summary.source_dpi = source_dpi
     summary.tallest_body = max((cut.image.height for cut in cuts), default=0)
     summary.largest_item_edge = max((c.longest_edge for c in candidates), default=0)
 
@@ -329,14 +346,14 @@ def build_catalog(
         summary.written += 1
 
     if cuts:
-        summary.bodies = _write_bodies(cuts, assets_dir, build_id, decision, source_dpi)
+        summary.bodies = _write_bodies(cuts, assets_dir, build_id, decision)
 
     catalog = {
         "version": CATALOG_VERSION,
         "min_quality": min_quality,
         "items": [item.to_dict() for item in sorted(catalog_items, key=lambda i: i.id)],
         "build_id": build_id,
-        "scale": decision.to_dict(source_dpi),
+        "scale": decision.to_dict(),
     }
     (assets_dir / "catalog.json").write_text(
         json.dumps(catalog, indent=2) + "\n", encoding="utf-8"
@@ -359,7 +376,6 @@ def _write_bodies(
     assets_dir: Path,
     build_id: str,
     decision: ScaleDecision,
-    source_dpi: int,
 ) -> int:
     """Write the cut bodies at the build's factor as `bodies.json` + `bodies/<id>.png`."""
     bodies_dir = assets_dir / BODIES_SUBDIR
@@ -382,7 +398,7 @@ def _write_bodies(
     bodies = {
         "version": BODIES_VERSION,
         "build_id": build_id,
-        "scale": decision.to_dict(source_dpi),
+        "scale": decision.to_dict(),
         "bodies": records,
     }
     (assets_dir / "bodies.json").write_text(json.dumps(bodies, indent=2) + "\n", encoding="utf-8")

@@ -20,9 +20,6 @@ export function createHand(capacity) {
     remove(slot) {
       items.splice(slot, 1);
     },
-    items() {
-      return items.slice();
-    },
     // Fills the slot elements in order; `tileFor(item, slot)` builds the tile.
     render(slots, tileFor) {
       slots.forEach((slot, k) => {

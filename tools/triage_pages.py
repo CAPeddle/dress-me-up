@@ -19,7 +19,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from dressup_pipeline.extract import render_page
 from dressup_pipeline.triage import (
     TRIAGE_DPI,
     OverrideError,
@@ -27,7 +26,6 @@ from dressup_pipeline.triage import (
     load_overrides,
     manifest_path,
     overrides_path,
-    rotate_page,
     triage_pdf,
 )
 
@@ -47,7 +45,10 @@ def main(argv: list[str] | None = None) -> int:
 
     args.out.mkdir(parents=True, exist_ok=True)
     for pdf in args.pdfs:
-        manifest = triage_pdf(pdf, dpi=args.dpi)
+        # The upright pages the verdicts were taken from, kept as triage renders
+        # them so the contact sheets below need no second pass over the PDF.
+        rendered: list[tuple[int, object]] = []
+        manifest = triage_pdf(pdf, dpi=args.dpi, on_page=lambda page_no, image: rendered.append((page_no, image)))
 
         overrides = overrides_path(args.out, pdf)
         if overrides.is_file():
@@ -59,10 +60,10 @@ def main(argv: list[str] | None = None) -> int:
 
         manifest.write(manifest_path(args.out, pdf))
 
+        upright = dict(rendered)
         by_verdict: dict[str, list[tuple[int, object]]] = {}
         for page in manifest.pages:
-            image = rotate_page(render_page(pdf, page.page, dpi=args.dpi), page.rotation)
-            by_verdict.setdefault(page.verdict, []).append((page.page, image))
+            by_verdict.setdefault(page.verdict, []).append((page.page, upright[page.page]))
         for verdict, pages in by_verdict.items():
             contact_sheet(pages).save(args.out / f"{pdf.stem}.{verdict}.png")
 

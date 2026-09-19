@@ -112,5 +112,5 @@ export function createEngine({ slop = DEFAULT_SLOP_PX, tapMs = DEFAULT_TAP_MS } 
     });
   }
 
-  return { attachTap, attachDrag, isLive: () => live.size > 0 };
+  return { attachTap, attachDrag };
 }

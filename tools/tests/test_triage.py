@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image
 
 from dressup_pipeline.pagetype import PAGE_TYPES
 from dressup_pipeline.triage import (
@@ -24,6 +24,7 @@ from dressup_pipeline.triage import (
     rotate_page,
     triage_pdf,
 )
+from conftest import make_border_doll_page
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -35,20 +36,6 @@ def _smoke_pdf(tmp_path, pages=2):
     images = [make_smoke_pdf.build_page() for _ in range(pages)]
     images[0].save(pdf, save_all=True, append_images=images[1:])
     return pdf
-
-
-def _doll_page():
-    """A base-body page laid on its side: the detector should ask for 90 degrees."""
-    page = Image.new("RGB", (660, 700), "white")
-    draw = ImageDraw.Draw(page)
-    draw.rectangle([0, 0, 90, 700], fill=(60, 110, 70))
-    draw.rectangle([570, 0, 660, 700], fill=(70, 90, 140))
-    draw.rectangle([325, 130, 365, 350], fill=(226, 188, 160))
-    draw.rectangle([300, 150, 390, 195], fill=(226, 188, 160))
-    draw.rectangle([328, 350, 342, 660], fill=(226, 188, 160))
-    draw.rectangle([348, 350, 362, 660], fill=(226, 188, 160))
-    draw.ellipse([320, 40, 370, 140], fill=(45, 30, 25))
-    return page
 
 
 def _manifest(pages):
@@ -90,7 +77,7 @@ def test_single_page_pdf_is_a_one_row_manifest(tmp_path):
 
 def test_sideways_doll_page_gets_a_rotation_and_is_classified_upright(tmp_path):
     pdf = tmp_path / "doll.pdf"
-    rotate_page(_doll_page(), 270).save(pdf)  # laid on its side; 90 cw brings it back
+    rotate_page(make_border_doll_page(), 270).save(pdf)  # laid on its side; 90 cw brings it back
 
     manifest = triage_pdf(pdf)
 

@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from dressup_pipeline.bodies import BodyError, load_body_list
-from dressup_pipeline.catalog import DEFAULT_BODY_HEIGHT_PX, build_catalog
+from dressup_pipeline.catalog import DEFAULT_BODY_HEIGHT_PX, BodiesSource, build_catalog
 from dressup_pipeline.models import GROUPS
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -70,9 +70,7 @@ def main(argv: list[str] | None = None) -> int:
             min_quality=args.min_quality,
             groups=set(args.groups) if args.groups else None,
             target_body_height=args.body_height,
-            bodies_list=bodies_list,
-            source_root=args.source,
-            triage_dir=args.triage,
+            bodies=None if bodies_list is None else BodiesSource(bodies_list, args.source, args.triage),
         )
     except BodyError as exc:
         print(f"error: {exc}", file=sys.stderr)

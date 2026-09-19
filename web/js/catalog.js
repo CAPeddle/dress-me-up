@@ -10,10 +10,9 @@ export const CATEGORY_ORDER = Object.freeze([
 ]);
 
 export class ContentError extends Error {
-  constructor(code, message) {
+  constructor(message) {
     super(message);
     this.name = "ContentError";
-    this.code = code; // "missing" | "invalid" | "build-mismatch"
   }
 }
 
@@ -22,20 +21,22 @@ export function checkBuildIds(catalog, bodies) {
   const a = catalog && catalog.build_id;
   const b = bodies && bodies.build_id;
   if (typeof a !== "string" || typeof b !== "string" || a === "" || b === "") {
-    throw new ContentError("invalid", "a content file has no build id");
+    throw new ContentError("a content file has no build id");
   }
   if (a !== b) {
-    throw new ContentError("build-mismatch", `catalog build ${a} does not match bodies build ${b}`);
+    throw new ContentError(`catalog build ${a} does not match bodies build ${b}`);
   }
   return a;
 }
 
-// An image path from a content file, made relative to the served assets root.
-export function resolveImage(baseUrl, image) {
-  if (typeof image !== "string" || image === "" || image.startsWith("/") || image.includes("..")) {
-    throw new ContentError("invalid", `bad image path ${JSON.stringify(image)}`);
+// A path from inside the content, resolved against the served assets root: the
+// two content files themselves as well as every image they name. Same-origin and
+// relative by construction, so a content file can never point the page elsewhere.
+export function resolveContentPath(baseUrl, path) {
+  if (typeof path !== "string" || path === "" || path.startsWith("/") || path.includes("..")) {
+    throw new ContentError(`bad image path ${JSON.stringify(path)}`);
   }
-  return baseUrl.endsWith("/") ? baseUrl + image : `${baseUrl}/${image}`;
+  return baseUrl.endsWith("/") ? baseUrl + path : `${baseUrl}/${path}`;
 }
 
 // Items grouped by category in the pipeline's order, keeping each item's index
@@ -58,27 +59,27 @@ async function fetchJson(url) {
   try {
     response = await fetch(url, { cache: "no-cache" });
   } catch (err) {
-    throw new ContentError("missing", `${url} could not be fetched`);
+    throw new ContentError(`${url} could not be fetched`);
   }
   if (!response.ok) {
-    throw new ContentError("missing", `${url} is missing (${response.status})`);
+    throw new ContentError(`${url} is missing (${response.status})`);
   }
   try {
     return await response.json();
   } catch (err) {
-    throw new ContentError("invalid", `${url} is not valid JSON`);
+    throw new ContentError(`${url} is not valid JSON`);
   }
 }
 
 export async function loadContent(baseUrl = "assets/") {
   const [catalog, bodies] = await Promise.all([
-    fetchJson(resolveImage(baseUrl, "catalog.json")),
-    fetchJson(resolveImage(baseUrl, "bodies.json")),
+    fetchJson(resolveContentPath(baseUrl, "catalog.json")),
+    fetchJson(resolveContentPath(baseUrl, "bodies.json")),
   ]);
-  if (!Array.isArray(catalog.items)) throw new ContentError("invalid", "catalog.json has no items list");
-  if (!Array.isArray(bodies.bodies)) throw new ContentError("invalid", "bodies.json has no bodies list");
+  if (!Array.isArray(catalog.items)) throw new ContentError("catalog.json has no items list");
+  if (!Array.isArray(bodies.bodies)) throw new ContentError("bodies.json has no bodies list");
   const buildId = checkBuildIds(catalog, bodies);
-  const withImage = (entry) => ({ ...entry, image: resolveImage(baseUrl, entry.image) });
+  const withImage = (entry) => ({ ...entry, image: resolveContentPath(baseUrl, entry.image) });
   return {
     buildId,
     scale: catalog.scale || bodies.scale || null,

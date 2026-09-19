@@ -19,6 +19,8 @@ from dressup_pipeline.orientation import (
     detect_orientation,
     measure_orientation,
 )
+from dressup_pipeline.triage import rotate_page
+from conftest import make_border_doll_page
 
 CONTENT = Path(__file__).resolve().parents[2] / "content" / "source"
 SIDEWAYS_PDF = CONTENT / "Fantasy" / "20260515170658.pdf"
@@ -29,11 +31,6 @@ needs_corpus = pytest.mark.skipif(
 )
 
 
-def rotate_cw(image: Image.Image, degrees: int) -> Image.Image:
-    """Turn an image clockwise — the direction `detect_orientation` speaks in."""
-    return image.rotate(-degrees, expand=True)
-
-
 @pytest.fixture
 def doll_page():
     """A base-body page: a figure between two border strips that bleed off the edge.
@@ -41,16 +38,7 @@ def doll_page():
     Head-heavy and shoulder-wide on purpose — those are the two cues the which-way-up
     decision rests on.
     """
-    page = Image.new("RGB", (660, 700), "white")
-    draw = ImageDraw.Draw(page)
-    draw.rectangle([0, 0, 90, 700], fill=(60, 110, 70))      # decoration, off the left edge
-    draw.rectangle([570, 0, 660, 700], fill=(70, 90, 140))   # decoration, off the right edge
-    draw.rectangle([325, 130, 365, 350], fill=(226, 188, 160))   # torso
-    draw.rectangle([300, 150, 390, 195], fill=(226, 188, 160))   # outstretched arms — widest
-    draw.rectangle([328, 350, 342, 660], fill=(226, 188, 160))   # legs
-    draw.rectangle([348, 350, 362, 660], fill=(226, 188, 160))
-    draw.ellipse([320, 40, 370, 140], fill=(45, 30, 25))         # head — darkest
-    return page
+    return make_border_doll_page()
 
 
 @pytest.fixture
@@ -71,14 +59,14 @@ def test_upright_doll_page_needs_no_rotation(doll_page):
 
 @pytest.mark.parametrize("applied", [90, 180, 270])
 def test_a_turned_page_asks_to_be_turned_back(doll_page, applied):
-    turned = rotate_cw(doll_page, applied)
+    turned = rotate_page(doll_page, applied)
 
     assert detect_orientation(turned) == (360 - applied) % 360
 
 
 @pytest.mark.parametrize("applied", [90, 180, 270])
 def test_correction_lands_a_turned_page_upright(doll_page, applied):
-    corrected, degrees = correct_orientation(rotate_cw(doll_page, applied))
+    corrected, degrees = correct_orientation(rotate_page(doll_page, applied))
 
     assert degrees == (360 - applied) % 360
     assert detect_orientation(corrected) == 0
@@ -95,7 +83,7 @@ def test_correction_returns_an_untouched_upright_page(doll_page):
 def test_axis_score_reads_positive_for_portrait_content(doll_page):
     """The score is the module's own confidence, and callers triage on it."""
     assert measure_orientation(doll_page).axis_score > 0.5
-    assert measure_orientation(rotate_cw(doll_page, 90)).axis_score < -0.5
+    assert measure_orientation(rotate_page(doll_page, 90)).axis_score < -0.5
 
 
 def test_head_cue_sits_in_the_upper_quarter_of_the_figure(doll_page):
@@ -124,7 +112,7 @@ def test_decision_survives_a_change_of_render_resolution(doll_page):
     large = doll_page.resize((1980, 2100), Image.BILINEAR)
 
     assert detect_orientation(small) == detect_orientation(large) == 0
-    assert detect_orientation(rotate_cw(large, 90)) == 270
+    assert detect_orientation(rotate_page(large, 90)) == 270
 
 
 @needs_corpus

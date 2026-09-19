@@ -18,6 +18,7 @@ import build_catalog as build_catalog_cli
 from dressup_pipeline.catalog import (
     DEFAULT_BODY_HEIGHT_PX,
     ITEM_CEILING_PX,
+    BodiesSource,
     build_catalog,
     compute_scale,
 )
@@ -204,7 +205,7 @@ def body_book(tmp_path):
 def build_with_bodies(root, assets, body_book, **kwargs):
     return build_catalog(
         root, assets, min_quality=0.90,
-        bodies_list=body_book["listing"], source_root=body_book["source"], triage_dir=body_book["triage"],
+        bodies=BodiesSource(body_book["listing"], body_book["source"], body_book["triage"]),
         **kwargs,
     )
 

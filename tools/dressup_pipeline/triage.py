@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from PIL import Image, ImageDraw
 
@@ -150,8 +150,18 @@ def rotate_page(image: Image.Image, degrees: int) -> Image.Image:
     return image.rotate(-degrees, expand=True)
 
 
-def triage_pdf(pdf_path: Path, dpi: int = TRIAGE_DPI) -> Manifest:
-    """Render every page, find its rotation, classify it upright, and report."""
+def triage_pdf(
+    pdf_path: Path,
+    dpi: int = TRIAGE_DPI,
+    on_page: Callable[[int, Image.Image], None] | None = None,
+) -> Manifest:
+    """Render every page, find its rotation, classify it upright, and report.
+
+    `on_page` is handed each page number with the upright image the verdict was
+    taken from. Rendering a scanned PDF is the expensive part of this stage, so a
+    caller that wants the pages themselves — contact sheets — takes them from
+    here rather than rendering and rotating the whole book a second time.
+    """
     import pymupdf
 
     with pymupdf.open(pdf_path) as doc:
@@ -162,7 +172,10 @@ def triage_pdf(pdf_path: Path, dpi: int = TRIAGE_DPI) -> Manifest:
         page = render_page(pdf_path, page_no, dpi=dpi)
         degrees = detect_orientation(page)
         # Classify the page the extractor will actually see, not the scan as it lay.
-        verdict = classify_page(rotate_page(page, degrees))
+        upright = rotate_page(page, degrees)
+        verdict = classify_page(upright)
+        if on_page is not None:
+            on_page(page_no, upright)
         pages.append(
             PageVerdict(
                 page=page_no,

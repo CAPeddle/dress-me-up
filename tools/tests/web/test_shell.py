@@ -6,18 +6,12 @@ import json
 
 import pytest
 
-from tests.web.conftest import FIXTURE_ASSETS, PORTRAIT
+from tests.web.conftest import FIXTURE_ASSETS, PORTRAIT, open_game
 
 pytestmark = pytest.mark.browser
 
 CATALOG = json.loads((FIXTURE_ASSETS / "catalog.json").read_text())
 BODIES = json.loads((FIXTURE_ASSETS / "bodies.json").read_text())
-
-
-def open_game(page, url):
-    page.goto(url)
-    page.wait_for_selector("html[data-content='ready'], html[data-content='failed']")
-    return page
 
 
 # ---------------------------------------------------------------- happy path

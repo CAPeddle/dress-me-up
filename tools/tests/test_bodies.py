@@ -18,7 +18,6 @@ from dressup_pipeline.bodies import (
     build_bodies,
     choose_figure,
     cut_body,
-    find_figures,
     load_body_list,
     resolve_pdf,
     shared_dpi,
@@ -38,6 +37,11 @@ def entry(**overrides):
     fields = dict(id="fantasy-x-p00", pdf="x.pdf", page=0, group="fantasy", region=None)
     fields.update(overrides)
     return BodyEntry(**fields)
+
+
+def find_figures(page):
+    """Just the boxes of `find_figure_regions`, which is all these tests read."""
+    return [box for box, _ in find_figure_regions(page)]
 
 
 def write_list(path, bodies):
@@ -280,7 +284,7 @@ def test_build_bodies_cuts_each_listed_page_in_list_order(tmp_path, two_page_boo
         {"id": "fantasy-book-p00", "pdf": "book.pdf", "page": 0, "group": "fantasy", "region": None},
     ])
 
-    cuts, dpi = build_bodies(listing, tmp_path / "source", tmp_path / "sidecars", tmp_path / "triage")
+    cuts, dpi = build_bodies(load_body_list(listing), tmp_path / "source", tmp_path / "sidecars", tmp_path / "triage")
 
     assert dpi == 72
     assert [c.id for c in cuts] == ["fantasy-book-p01", "fantasy-book-p00"]
@@ -302,7 +306,7 @@ def test_build_bodies_applies_the_manifest_rotation(tmp_path):
         {"id": "turned-p00", "pdf": "turned.pdf", "page": 0, "group": "fantasy", "region": None},
     ])
 
-    (cut,), _ = build_bodies(listing, source, tmp_path / "sidecars", tmp_path / "triage")
+    (cut,), _ = build_bodies(load_body_list(listing), source, tmp_path / "sidecars", tmp_path / "triage")
 
     assert cut.image.height > cut.image.width
 
@@ -311,7 +315,7 @@ def test_build_bodies_with_an_empty_list_does_nothing(tmp_path):
     listing = write_list(tmp_path / "list.json", [])
     (tmp_path / "sidecars").mkdir()
 
-    cuts, dpi = build_bodies(listing, tmp_path / "source", tmp_path / "sidecars", tmp_path / "triage")
+    cuts, dpi = build_bodies(load_body_list(listing), tmp_path / "source", tmp_path / "sidecars", tmp_path / "triage")
 
     assert cuts == []
     assert dpi == DEFAULT_DPI
@@ -328,7 +332,7 @@ def test_build_bodies_refuses_a_page_with_no_figure_rather_than_writing_nothing(
     ])
 
     with pytest.raises(BodyError) as excinfo:
-        build_bodies(listing, source, tmp_path / "sidecars", tmp_path / "triage")
+        build_bodies(load_body_list(listing), source, tmp_path / "sidecars", tmp_path / "triage")
 
     assert "blank-p00" in str(excinfo.value) and "page 0" in str(excinfo.value)
 
@@ -339,7 +343,7 @@ def test_build_bodies_refuses_a_missing_pdf_by_name(tmp_path, two_page_book):
     ])
 
     with pytest.raises(BodyError, match="ghost.pdf"):
-        build_bodies(listing, tmp_path / "source", tmp_path / "sidecars", tmp_path / "triage")
+        build_bodies(load_body_list(listing), tmp_path / "source", tmp_path / "sidecars", tmp_path / "triage")
 
 
 def test_build_bodies_refuses_a_page_with_no_manifest_and_says_how_to_make_one(tmp_path, two_page_book):
@@ -348,7 +352,7 @@ def test_build_bodies_refuses_a_page_with_no_manifest_and_says_how_to_make_one(t
     ])
 
     with pytest.raises(BodyError, match="triage_pages.py"):
-        build_bodies(listing, tmp_path / "source", tmp_path / "sidecars", tmp_path / "empty-triage")
+        build_bodies(load_body_list(listing), tmp_path / "source", tmp_path / "sidecars", tmp_path / "empty-triage")
 
 
 def test_build_bodies_two_dolls_need_an_ordinal_and_honour_it(tmp_path):
@@ -362,12 +366,12 @@ def test_build_bodies_two_dolls_need_an_ordinal_and_honour_it(tmp_path):
         {"id": "pair-p00", "pdf": "pair.pdf", "page": 0, "group": "fantasy", "region": None},
     ])
     with pytest.raises(BodyError, match="pair-p00"):
-        build_bodies(ambiguous, source, tmp_path / "sidecars", tmp_path / "triage")
+        build_bodies(load_body_list(ambiguous), source, tmp_path / "sidecars", tmp_path / "triage")
 
     named = write_list(tmp_path / "named.json", [
         {"id": "pair-p00-right", "pdf": "pair.pdf", "page": 0, "group": "fantasy", "region": 1},
     ])
-    (cut,), _ = build_bodies(named, source, tmp_path / "sidecars", tmp_path / "triage")
+    (cut,), _ = build_bodies(load_body_list(named), source, tmp_path / "sidecars", tmp_path / "triage")
 
     assert_size_matches_doll(cut.image, RIGHT_DOLL)
 
@@ -379,7 +383,7 @@ def test_build_bodies_refuses_disagreeing_sidecar_dpis(tmp_path, two_page_book):
     ])
 
     with pytest.raises(BodyError, match="stray"):
-        build_bodies(listing, tmp_path / "source", tmp_path / "sidecars", tmp_path / "triage")
+        build_bodies(load_body_list(listing), tmp_path / "source", tmp_path / "sidecars", tmp_path / "triage")
 
 
 def test_rendering_back_the_synthetic_pdf_keeps_the_page_size(tmp_path, two_page_book):

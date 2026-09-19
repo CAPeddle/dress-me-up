@@ -33,8 +33,6 @@ from .models import GROUPS, BBox, iter_sidecars
 from .orientation import find_figure_regions
 from .triage import Manifest, manifest_path, rotate_page
 
-BODY_LIST_VERSION = 1
-
 # A second figure at least this tall relative to the tallest is another doll,
 # not a decoration, and the list must say which one is meant.
 RIVAL_HEIGHT_FRAC = 0.8
@@ -140,11 +138,6 @@ def shared_dpi(sidecar_root: Path) -> int:
 # -- finding and cutting --------------------------------------------------------
 
 
-def find_figures(image: Image.Image) -> list[BBox]:
-    """Doll-shaped regions on an upright page, left to right, in the image's pixels."""
-    return [box for box, _ in find_figure_regions(image)]
-
-
 def choose_figure(figures: list[BBox], entry: BodyEntry) -> BBox:
     """The figure the entry means: its ordinal if it gives one, else the tallest.
 
@@ -189,21 +182,26 @@ def cut_body(image: Image.Image, box: BBox, mask: np.ndarray) -> Image.Image:
 
 
 def build_bodies(
-    list_path: Path,
+    entries: list[BodyEntry],
     source_root: Path,
     sidecar_root: Path,
     triage_dir: Path,
 ) -> tuple[list[BodyCut], int]:
     """Cut every body in the list, in list order; return them with the DPI used."""
-    entries = load_body_list(list_path)
     dpi = shared_dpi(sidecar_root)
     if not entries:
         return [], dpi
 
     cuts: list[BodyCut] = []
+    # Both caches are per distinct PDF: the recursive glob behind `resolve_pdf`
+    # and the manifest read each happen once however many bodies a page-mate list
+    # takes from the same book.
+    pdfs: dict[str, Path] = {}
     manifests: dict[Path, Manifest] = {}
     for entry in entries:
-        pdf = resolve_pdf(entry, source_root)
+        if entry.pdf not in pdfs:
+            pdfs[entry.pdf] = resolve_pdf(entry, source_root)
+        pdf = pdfs[entry.pdf]
         if pdf not in manifests:
             path = manifest_path(triage_dir, pdf)
             if not path.is_file():

@@ -4,7 +4,7 @@ import pytest
 from PIL import Image
 
 from dressup_pipeline.bodies import BodyError
-from dressup_pipeline.catalog import build_catalog, new_build_id
+from dressup_pipeline.catalog import BodiesSource, build_catalog, new_build_id
 from dressup_pipeline.triage import TRIAGE_DPI, Manifest, PageVerdict, manifest_path
 from conftest import make_doll_page, make_item_image
 
@@ -160,7 +160,7 @@ def test_bodies_are_written_beside_the_catalog_in_list_order(tmp_path, sidecar_c
 
     summary = build_catalog(
         root, assets, min_quality=0.90,
-        bodies_list=body_book["write_list"](TWO_BODIES), source_root=body_book["source"], triage_dir=body_book["triage"],
+        bodies=BodiesSource(body_book["write_list"](TWO_BODIES), body_book["source"], body_book["triage"]),
     )
 
     bodies = json.loads((assets / "bodies.json").read_text())
@@ -192,7 +192,7 @@ def test_catalog_keeps_every_prior_key_when_bodies_are_built(tmp_path, sidecar_c
 
     build_catalog(
         root, with_bodies, min_quality=0.90,
-        bodies_list=body_book["write_list"](TWO_BODIES), source_root=body_book["source"], triage_dir=body_book["triage"],
+        bodies=BodiesSource(body_book["write_list"](TWO_BODIES), body_book["source"], body_book["triage"]),
     )
 
     # The scale blocks compare equal only because both builds clamp to a factor
@@ -209,7 +209,7 @@ def test_a_written_item_group_with_no_body_fails_the_build_by_group(tmp_path, si
     with pytest.raises(BodyError, match="knight"):
         build_catalog(
             root, tmp_path / "assets", min_quality=0.90,
-            bodies_list=body_book["write_list"](TWO_BODIES), source_root=body_book["source"], triage_dir=body_book["triage"],
+            bodies=BodiesSource(body_book["write_list"](TWO_BODIES), body_book["source"], body_book["triage"]),
         )
 
 
@@ -218,7 +218,7 @@ def test_an_empty_body_list_is_a_no_op(tmp_path, sidecar_corpus, body_book):
 
     summary = build_catalog(
         root, tmp_path / "assets", min_quality=0.90,
-        bodies_list=body_book["write_list"]([]), source_root=body_book["source"], triage_dir=body_book["triage"],
+        bodies=BodiesSource(body_book["write_list"]([]), body_book["source"], body_book["triage"]),
     )
 
     assert summary.bodies == 0
