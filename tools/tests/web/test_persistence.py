@@ -26,6 +26,7 @@ from tests.web.conftest import (
 pytestmark = pytest.mark.browser
 
 BUILD_ID = "fixture-0001"
+ITEM_COUNT = 6  # the fixture catalog's item count; indices run 0..5
 
 
 def strings_in(value):
@@ -121,6 +122,25 @@ def test_foreign_build_id_is_treated_as_fresh(page, base_url, console_errors):
     assert console_errors == []
 
 
+def test_an_item_index_past_the_catalog_is_treated_as_fresh(page, base_url, console_errors):
+    """A catalog that shrank under an unchanged build id must not crash the boot.
+
+    The build id alone cannot tell that item 9 is no longer served; without the
+    bound, rendering the placement dies and the whole page falls to the content
+    failure screen on every reload.
+    """
+    seed_store(page, json.dumps({
+        "version": 1, "build_id": BUILD_ID,
+        "placements": [{"item": ITEM_COUNT + 3, "body": 0, "x": 0.5, "y": 0.5, "z": 0}],
+        "done": [True, False, False], "names": [3, -1, -1],
+    }))
+    open_game(page, base_url)
+    assert page.get_attribute("html", "data-content") == "ready"
+    assert page.locator("[data-rig-kind='placed']").count() == 0
+    assert page.locator("[data-rig-stage='0'] [data-rig-kind='star']").get_attribute("aria-pressed") == "false"
+    assert console_errors == []
+
+
 def test_valid_seeded_store_is_rendered(page, base_url):
     seed_store(page, json.dumps({
         "version": 1, "build_id": BUILD_ID,
@@ -196,21 +216,24 @@ def test_serialize_and_deserialize_are_pure_and_strict(page, base_url):
     result = page.evaluate(
         """async ([buildId]) => {
             const store = await import("./js/store.js");
+            const bounds = { buildId, bodyCount: 2, itemCount: 6 };
             const fresh = store.freshState({ buildId, bodyCount: 2 });
             fresh.placements.push({ item: 4, body: 1, x: -0.2, y: 1.3, z: 2 });
             fresh.done[1] = true;
             fresh.names[0] = 9;
             const text = store.serialize(fresh);
-            const back = store.deserialize(text, { buildId, bodyCount: 2 });
+            const back = store.deserialize(text, bounds);
             const rejects = [
                 "", "null", "[]", "{}", "{bad",
                 JSON.stringify({ ...fresh, version: 0 }),
                 JSON.stringify({ ...fresh, build_id: "other" }),
                 JSON.stringify({ ...fresh, placements: [{ item: "hat_crown", body: 0, x: 0, y: 0, z: 0 }] }),
                 JSON.stringify({ ...fresh, placements: [{ item: 1, body: 5, x: 0, y: 0, z: 0 }] }),
+                JSON.stringify({ ...fresh, placements: [{ item: 6, body: 0, x: 0, y: 0, z: 0 }] }),
+                JSON.stringify({ ...fresh, placements: [{ item: 99, body: 0, x: 0, y: 0, z: 0 }] }),
                 JSON.stringify({ ...fresh, done: [true] }),
                 JSON.stringify({ ...fresh, names: ["Lily", -1] }),
-            ].map(t => store.deserialize(t, { buildId, bodyCount: 2 }));
+            ].map(t => store.deserialize(t, bounds));
             return { key: store.STORE_KEY, text, back, rejects, freshKeys: Object.keys(fresh) };
         }""",
         [BUILD_ID],
@@ -219,4 +242,42 @@ def test_serialize_and_deserialize_are_pure_and_strict(page, base_url):
     assert result["freshKeys"] == ["version", "build_id", "placements", "done", "names"]
     assert json.loads(result["text"])["placements"] == [{"item": 4, "body": 1, "x": -0.2, "y": 1.3, "z": 2}]
     assert result["back"] == json.loads(result["text"])
-    assert result["rejects"] == [None] * 11
+    assert result["rejects"] == [None] * 13
+
+
+def test_a_missing_bound_is_a_caller_error_not_a_fresh_state(page, base_url):
+    """An absent bound must throw, not compare every index against undefined."""
+    open_game(page, base_url)
+    result = page.evaluate(
+        """async ([buildId]) => {
+            const store = await import("./js/store.js");
+            const text = JSON.stringify({
+                version: 1, build_id: buildId,
+                placements: [{ item: 4, body: 0, x: 0, y: 0, z: 0 }],
+                done: [false, false], names: [-1, -1],
+            });
+            const attempt = (fn) => {
+                try {
+                    fn();
+                    return null;
+                } catch (err) {
+                    return { name: err.name, message: err.message };
+                }
+            };
+            return {
+                deserializeNoItemCount: attempt(() => store.deserialize(text, { buildId, bodyCount: 2 })),
+                deserializeNoBodyCount: attempt(() => store.deserialize(text, { buildId, itemCount: 6 })),
+                deserializeBadItemCount: attempt(
+                    () => store.deserialize(text, { buildId, bodyCount: 2, itemCount: -1 })),
+                loadNoItemCount: attempt(() => store.load({ buildId, bodyCount: 2 })),
+            };
+        }""",
+        [BUILD_ID],
+    )
+    for key, thrown in result.items():
+        assert thrown is not None, key
+        assert thrown["name"] == "TypeError", (key, thrown)
+    assert "itemCount" in result["deserializeNoItemCount"]["message"]
+    assert "bodyCount" in result["deserializeNoBodyCount"]["message"]
+    assert "itemCount" in result["deserializeBadItemCount"]["message"]
+    assert "itemCount" in result["loadNoItemCount"]["message"]

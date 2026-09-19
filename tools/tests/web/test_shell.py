@@ -45,8 +45,12 @@ def test_images_carry_catalog_dimensions(page, base_url):
     body_img = page.locator("[data-rig-kind='body'][data-rig-slot='0'] > img")
     assert body_img.get_attribute("width") == str(BODIES["bodies"][0]["width"])
     assert body_img.get_attribute("src").endswith("assets/" + BODIES["bodies"][0]["image"])
-    # Wait on the condition asserted, not on `complete`, which flips first.
-    page.wait_for_function("[...document.images].every(i => i.complete && i.naturalWidth > 0)")
+    # Wait on the condition asserted, not on `complete`, which flips first. The
+    # predicate is a function, not a bare expression: Playwright re-evaluates a
+    # bare expression through `new Function` on every poll, which the served
+    # CSP (`script-src 'self'`) refuses whenever the first check is not already
+    # true, so the wait failed by timing rather than by content.
+    page.wait_for_function("() => [...document.images].every(i => i.complete && i.naturalWidth > 0)")
 
 
 def test_supply_is_grouped_by_category_in_pipeline_order(page, base_url):

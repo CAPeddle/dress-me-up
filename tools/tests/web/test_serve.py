@@ -231,6 +231,66 @@ def test_resolve_path_is_pure(serve, tmp_path):
     assert serve.resolve_path("/index.html%00.png", web, assets) is None
 
 
+def test_a_symlink_out_of_a_root_is_refused(serve, tmp_path):
+    """Resolution follows links, so a link is not a way around the two roots.
+
+    Both the file link and the directory link point at real files carrying a
+    served extension, so the refusal can only come from the root check and not
+    from the extension or is_file guards further down.
+    """
+    web = tmp_path / "web"
+    assets = tmp_path / "assets"
+    outside = tmp_path / "outside"
+    web.mkdir()
+    assets.mkdir()
+    outside.mkdir()
+    (web / "index.html").write_text("x")
+    (outside / "secret.json").write_text("{}")
+
+    (web / "escape.json").symlink_to(outside / "secret.json")
+    (assets / "escape.json").symlink_to(outside / "secret.json")
+    (web / "elsewhere").symlink_to(outside, target_is_directory=True)
+    (assets / "elsewhere").symlink_to(outside, target_is_directory=True)
+
+    # The links really do reach the file; only resolve_path refuses them.
+    assert (web / "escape.json").read_text() == "{}"
+    assert (web / "elsewhere" / "secret.json").read_text() == "{}"
+
+    for path in [
+        "/escape.json",
+        "/elsewhere/secret.json",
+        "/assets/escape.json",
+        "/assets/elsewhere/secret.json",
+    ]:
+        assert serve.resolve_path(path, web, assets) is None, path
+
+    # A served file that is not a link still resolves, so the refusals above are
+    # about leaving the root and not about the roots being unreadable.
+    assert serve.resolve_path("/index.html", web, assets) == (web / "index.html").resolve()
+
+
+def test_a_symlink_out_of_a_root_is_404_over_http(serve, server_factory, tmp_path):
+    """The same refusal through a real request, not only through resolve_path."""
+    web = tmp_path / "linked-web"
+    assets = tmp_path / "linked-assets"
+    outside = tmp_path / "linked-outside"
+    web.mkdir()
+    assets.mkdir()
+    outside.mkdir()
+    (web / "index.html").write_text("<!doctype html>")
+    (outside / "secret.json").write_text("{}")
+    (web / "escape.json").symlink_to(outside / "secret.json")
+    (assets / "escape.json").symlink_to(outside / "secret.json")
+    (web / "elsewhere").symlink_to(outside, target_is_directory=True)
+
+    running = server_factory(assets, web)
+    assert request(running.port, "GET", "/")[0] == 200
+    for path in ["/escape.json", "/elsewhere/secret.json", "/assets/escape.json"]:
+        status, _, body = request(running.port, "GET", path)
+        assert status == 404, path
+        assert b"{}" not in body, path
+
+
 def test_no_access_log_on_stdout(serve, tmp_path):
     result = subprocess.run(
         [sys.executable, "-c", (

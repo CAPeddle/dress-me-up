@@ -24,7 +24,13 @@ FINGERPRINTS = [
     ("rig marker", re.compile(r"PLAYTEST-RIG-DO-NOT-SHIP")),
     ("the word instrument", re.compile(r"instrument", re.IGNORECASE)),
     ("events path", re.compile(r"/events")),
-    ("POST", re.compile(r"\bPOST\b")),
+    # A write verb shouted in a served file, and separately a `method` option
+    # naming one in any case: browsers normalise `method: "post"`, so the bare
+    # word check stays case-sensitive (lowercase `delete` is Map.delete, and
+    # `input`/`output` must not trip anything).
+    ("write verb", re.compile(r"\b(?:POST|PUT|PATCH|DELETE)\b")),
+    ("write method", re.compile(
+        r"""\bmethod\b\s*[:=]\s*["'`]?\s*(?:POST|PUT|PATCH|DELETE)\b""", re.IGNORECASE)),
     ("sendBeacon", re.compile(r"sendBeacon")),
     ("WebSocket", re.compile(r"WebSocket")),
     ("EventSource", re.compile(r"EventSource")),
@@ -98,8 +104,50 @@ def test_planted_marker_is_named(web_copy):
 def test_planted_post_is_named(web_copy):
     plant(web_copy / "js" / "catalog.js", 'fetch("/events", { method: "POST" });')
     findings = scan_plain_build(web_copy)
-    assert any(f.startswith("js/catalog.js:") and f.endswith(": POST") for f in findings)
+    assert any(f.startswith("js/catalog.js:") and f.endswith(": write verb") for f in findings)
+    assert any(f.startswith("js/catalog.js:") and f.endswith(": write method") for f in findings)
     assert any(f.startswith("js/catalog.js:") and f.endswith(": events path") for f in findings)
+
+
+@pytest.mark.parametrize("line", [
+    'fetch(u, { method: "post" });',
+    "fetch(u, { method:'Put' });",
+    'const method = "patch";',
+    'options.method = "delete";',
+    '<form method=post>',
+])
+def test_a_lowercased_write_method_is_caught(web_copy, line):
+    """Browsers normalise the verb's case, so the scan may not rely on it being shouted."""
+    plant(web_copy / "js" / "main.js", line)
+    findings = scan_plain_build(web_copy)
+    assert any(f.startswith("js/main.js:") and f.endswith(": write method") for f in findings), findings
+
+
+# The bare-word check stays case-sensitive on purpose; these are the lines in the
+# tracked tree (gesture.js) and the ordinary words it must leave alone.
+@pytest.mark.parametrize("line", [
+    "live.delete(id);",
+    "map.delete(x);",
+    "const output = input + 1;",
+    "// put the tile back",
+    "element.dispatchEvent(new PointerEvent('pointerup'));",
+])
+def test_ordinary_lowercase_words_are_not_write_verbs(line):
+    """A pure check on the patterns themselves: no files, no copy of web/."""
+    for label, pattern in FINGERPRINTS:
+        assert not pattern.search(line), (label, line)
+
+
+def test_the_write_patterns_discriminate():
+    """The two write patterns, checked directly against the strings that matter."""
+    verb = dict(FINGERPRINTS)["write verb"]
+    option = dict(FINGERPRINTS)["write method"]
+    assert verb.search("xhr.open('POST', u);")
+    assert verb.search("send a PUT here")
+    assert not verb.search('fetch(u, { method: "post" });')
+    assert option.search('fetch(u, { method: "post" });')
+    assert not option.search("live.delete(id);")
+    assert not option.search("map.delete(x);")
 
 
 def test_planted_text_input_is_named(web_copy):

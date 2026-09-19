@@ -123,7 +123,11 @@ function buildSupply(items) {
 function render(content) {
   state.bodies = content.bodies;
   state.items = content.items;
-  state.saved = load({ buildId: content.buildId, bodyCount: content.bodies.length });
+  state.saved = load({
+    buildId: content.buildId,
+    bodyCount: content.bodies.length,
+    itemCount: content.items.length,
+  });
   state.nextZ = state.saved.placements.reduce((top, p) => Math.max(top, p.z + 1), 0);
   const board = el("section", { class: "board", "data-rig-region": "board" },
     content.bodies.map(buildStage));
