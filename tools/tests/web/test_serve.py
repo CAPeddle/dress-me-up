@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import http.client
+import socket
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -29,15 +31,35 @@ def snapshot(*roots):
 
 # ---------------------------------------------------------------- CLI posture
 
-@pytest.mark.parametrize("host", ["0.0.0.0", "::", "*", ""])
-def test_wildcard_host_is_refused_by_name(host):
-    result = subprocess.run(
-        [sys.executable, str(SERVE_PY), "--host", host, "--assets", str(FIXTURE_ASSETS)],
-        capture_output=True, text=True, timeout=20,
-    )
-    assert result.returncode == 2
-    assert repr(host) in result.stderr
-    assert "refusing" in result.stderr.lower()
+# The first four are caught by name; the rest spell the same two wildcard
+# addresses in ways no literal set can enumerate, so only the address the socket
+# actually bound can refuse them.
+@pytest.mark.parametrize("host", [
+    "0.0.0.0", "::", "*", "", "0", "0.0", "00.0.0.0", "::0", "0:0:0:0:0:0:0:0",
+])
+def test_wildcard_host_is_refused(serve, monkeypatch, capsys, host):
+    monkeypatch.setattr(serve, "SHARED_PORT", 0)  # never touch the shared port
+    created = []
+    real_make_server = serve.make_server
+
+    def spy(host, port, web_dir, assets_dir):
+        server = real_make_server(host, port, web_dir, assets_dir)
+        server.serve_forever = lambda *a, **kw: pytest.fail(
+            f"started serving on the wildcard address {server.server_address}"
+        )
+        created.append(server)
+        return server
+
+    monkeypatch.setattr(serve, "make_server", spy)
+
+    code = serve.main(["--host", host, "--assets", str(FIXTURE_ASSETS)])
+    err = capsys.readouterr().err
+
+    assert code == 2
+    assert repr(host) in err
+    assert "refusing" in err.lower()
+    # Whatever was bound to find out is closed again: nothing is left listening.
+    assert all(server.socket.fileno() == -1 for server in created)
 
 
 def test_host_is_required():
@@ -59,6 +81,45 @@ def test_cli_has_no_port_flag(serve):
 def test_held_port_refuses_to_bind(serve, site):
     with pytest.raises(OSError):
         serve.make_server("127.0.0.1", site.port, WEB_DIR, FIXTURE_ASSETS)
+
+
+def read_response_head(sock) -> bytes:
+    """Everything up to and including the blank line after the status and headers."""
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+def test_restart_is_not_blocked_by_a_served_connection(serve):
+    """A keep-alive client must not keep the next run of the server off the port.
+
+    The exclusivity the held-port test proves is the kernel's, and it survives
+    ``SO_REUSEADDR``; a lingering connection on the same port is not the same
+    thing as someone else holding it, and must not be reported as one.
+    """
+    server = serve.make_server("127.0.0.1", 0, WEB_DIR, FIXTURE_ASSETS)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    client = socket.create_connection(("127.0.0.1", port), timeout=5)
+    try:
+        client.sendall(
+            b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n"
+        )
+        assert b"200" in read_response_head(client)
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        # The client is still connected on that port; binding it again must work.
+        restarted = serve.make_server("127.0.0.1", port, WEB_DIR, FIXTURE_ASSETS)
+        restarted.server_close()
+    finally:
+        client.close()
 
 
 def test_cli_reports_held_port(serve, site, monkeypatch, capsys):

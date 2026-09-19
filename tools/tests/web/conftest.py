@@ -21,8 +21,19 @@ LANDSCAPE = {"width": 1280, "height": 800}
 PORTRAIT = {"width": 800, "height": 1280}
 
 
-def _load_serve_module():
-    spec = importlib.util.spec_from_file_location("dressup_web_serve", WEB_DIR / "serve.py")
+SERVE_MODULE_NAME = "dressup_web_serve"
+
+
+def load_serve_module():
+    """``web/serve.py`` imported from its tracked location, once per session.
+
+    Public because the purity scan reads ``CONTENT_TYPES`` from it rather than
+    keeping a second copy of the table of what the server hands to a browser.
+    """
+    cached = sys.modules.get(SERVE_MODULE_NAME)
+    if cached is not None:
+        return cached
+    spec = importlib.util.spec_from_file_location(SERVE_MODULE_NAME, WEB_DIR / "serve.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -32,7 +43,7 @@ def _load_serve_module():
 @pytest.fixture(scope="session")
 def serve():
     """The ``web/serve.py`` module, imported from its tracked location."""
-    return _load_serve_module()
+    return load_serve_module()
 
 
 class RunningServer:

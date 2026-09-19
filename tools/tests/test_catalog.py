@@ -3,6 +3,7 @@ import json
 import pytest
 from PIL import Image
 
+import build_catalog as build_catalog_cli
 from dressup_pipeline.bodies import BodyError
 from dressup_pipeline.catalog import BodiesSource, build_catalog, new_build_id
 from dressup_pipeline.triage import TRIAGE_DPI, Manifest, PageVerdict, manifest_path
@@ -224,3 +225,71 @@ def test_an_empty_body_list_is_a_no_op(tmp_path, sidecar_corpus, body_book):
     assert summary.bodies == 0
     assert summary.written == 1
     assert not (tmp_path / "assets" / "bodies.json").exists()
+
+
+def test_a_rebuild_without_bodies_clears_the_stale_bodies_from_the_assets_dir(tmp_path, sidecar_corpus, body_book):
+    """A catalog-only rebuild must not leave last build's bodies.json behind.
+
+    catalog.json always gets a fresh build_id, so a stale bodies.json beside it
+    is a pair the web version refuses to load with nothing to explain it.
+    """
+    root, _ = sidecar_corpus([{"item_id": "a", **AT_72}])
+    assets = tmp_path / "assets"
+    build_catalog(
+        root, assets, min_quality=0.90,
+        bodies=BodiesSource(body_book["write_list"](TWO_BODIES), body_book["source"], body_book["triage"]),
+    )
+    stale_build_id = json.loads((assets / "catalog.json").read_text())["build_id"]
+    assert (assets / "bodies" / "fantasy-book-p00.png").exists()
+
+    summary = build_catalog(root, assets, min_quality=0.90)
+
+    catalog = json.loads((assets / "catalog.json").read_text())
+    assert not (assets / "bodies.json").exists()
+    assert not (assets / "bodies").exists()
+    assert catalog["build_id"] != stale_build_id
+    assert "bodies: 0 (removed a stale bodies.json from an earlier build)" in summary.as_report()
+
+
+# -- the CLI and the tracked body list ----------------------------------------
+
+
+def test_the_cli_skips_the_tracked_body_list_when_none_of_its_pdfs_are_here(tmp_path, sidecar_corpus, capsys):
+    """A fresh clone has no scans, so the quickstart must still write a catalog."""
+    assert build_catalog_cli._default_bodies_list() is not None, "the tracked list must list bodies for this test to mean anything"
+    root, _ = sidecar_corpus([{"item_id": "a", **ACCEPTED}])
+    assets = tmp_path / "assets"
+    source = tmp_path / "no-scans-here"  # deliberately never created
+
+    code = build_catalog_cli.main([
+        "--sidecars", str(root), "--assets", str(assets),
+        "--source", str(source), "--triage", str(tmp_path / "triage"),
+    ])
+
+    assert code == 0
+    assert [item["id"] for item in json.loads((assets / "catalog.json").read_text())["items"]] == ["a"]
+    assert not (assets / "bodies.json").exists()
+    err = capsys.readouterr().err
+    assert "base_bodies.json" in err and "skipped" in err and str(source) in err
+
+
+def test_an_explicit_body_list_is_never_skipped_when_its_pdf_is_missing(tmp_path, sidecar_corpus, capsys):
+    """--bodies is a human saying "these bodies"; a PDF it cannot find is an error."""
+    root, _ = sidecar_corpus([])  # empty, so the unbodied-group check cannot be what fails
+    listing = tmp_path / "explicit-bodies.json"
+    listing.write_text(
+        json.dumps({"version": 1, "bodies": [
+            {"id": "fantasy-nowhere-p00", "pdf": "nowhere.pdf", "page": 0, "group": "fantasy", "region": None},
+        ]}),
+        encoding="utf-8",
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+
+    code = build_catalog_cli.main([
+        "--sidecars", str(root), "--assets", str(tmp_path / "assets"),
+        "--bodies", str(listing), "--source", str(source), "--triage", str(tmp_path / "triage"),
+    ])
+
+    assert code == 1
+    assert "not found under" in capsys.readouterr().err

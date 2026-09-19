@@ -6,7 +6,9 @@
 Writes into app/src/main/assets/ by default — the only directory the app reads.
 When tools/base_bodies.json lists any bodies (or --bodies names another list),
 the same run cuts them from their triaged pages under --source and writes
-bodies.json + bodies/<id>.png beside the catalog.
+bodies.json + bodies/<id>.png beside the catalog. A checkout holding none of the
+scans the tracked list names skips that stage with a note and still writes the
+catalog; an explicit --bodies is never skipped.
 
 Every image in one build is scaled by one factor (KTD4), aimed at --body-height
 for the tallest Base Body and bounded by the Item ceiling, so a crown and a gown
@@ -22,7 +24,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from dressup_pipeline.bodies import BodyError, load_body_list
+from dressup_pipeline.bodies import BodyError, load_body_list, resolve_pdf
 from dressup_pipeline.catalog import DEFAULT_BODY_HEIGHT_PX, BodiesSource, build_catalog
 from dressup_pipeline.models import GROUPS
 
@@ -39,6 +41,28 @@ def _default_bodies_list() -> Path | None:
     if DEFAULT_BODIES.is_file() and load_body_list(DEFAULT_BODIES):
         return DEFAULT_BODIES
     return None
+
+
+def _list_applies_here(list_path: Path, source_root: Path) -> bool:
+    """Does this checkout hold any of the scans the list names?
+
+    Only ever asked of the *tracked* list, which ships with the repo and names
+    one parent's scans. On a clone without them every entry is unresolvable, and
+    the quickstart wants a catalog without bodies rather than exit 1. One entry
+    resolving is enough: a list that half resolves is a list error, and the
+    build should still fail on it the way it always has. An entry whose PDF is
+    ambiguous under the root counts as unresolved here too, so a source tree
+    that duplicates every listed scan skips the stage rather than failing —
+    which is why the note says the PDFs could not be resolved, not that they
+    are absent.
+    """
+    for entry in load_body_list(list_path):
+        try:
+            resolve_pdf(entry, source_root)
+        except BodyError:
+            continue
+        return True
+    return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -64,6 +88,14 @@ def main(argv: list[str] | None = None) -> int:
         bodies_list = args.bodies if args.bodies is not None else _default_bodies_list()
         if bodies_list is not None and not bodies_list.is_file():
             parser.error(f"body list does not exist: {bodies_list}")
+        # An explicit --bodies is a human naming these bodies, and is never skipped.
+        if args.bodies is None and bodies_list is not None and not _list_applies_here(bodies_list, args.source):
+            print(
+                f"note: tracked body list {bodies_list} skipped: no PDF it lists could be resolved "
+                f"under {args.source}; building catalog.json without bodies",
+                file=sys.stderr,
+            )
+            bodies_list = None
         summary = build_catalog(
             sidecar_root=args.sidecars,
             assets_dir=args.assets,

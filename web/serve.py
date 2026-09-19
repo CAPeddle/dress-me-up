@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import ipaddress
 import posixpath
 import socket
 import sys
@@ -24,6 +25,9 @@ from urllib.parse import unquote, urlsplit
 # this same port, and each refuses to start while the other holds it.
 SHARED_PORT = 8777
 
+# The common spellings, caught before any socket is made, for a friendly message.
+# They are not the check: `--host 0`, `00.0.0.0` and `::0` are wildcards too, and
+# only the address the kernel actually bound can tell (R9).
 WILDCARD_HOSTS = {"0.0.0.0", "::", "*", ""}
 
 CONTENT_SECURITY_POLICY = (
@@ -149,8 +153,10 @@ class StaticHandler(BaseHTTPRequestHandler):
 
 class StaticServer(ThreadingHTTPServer):
     daemon_threads = True
-    # Do not reuse the address: a held port must fail to bind, not double up.
-    allow_reuse_address = False
+    # A socket left in TIME_WAIT by the last run must not keep this one off the
+    # port; a live listener is still refused by the kernel, which is the only
+    # exclusivity the shared port needs.
+    allow_reuse_address = True
 
     def __init__(self, host: str, port: int, web_dir: Path, assets_dir: Path):
         if ":" in host:
@@ -166,6 +172,14 @@ class StaticServer(ThreadingHTTPServer):
 def make_server(host: str, port: int, web_dir: Path | str, assets_dir: Path | str) -> StaticServer:
     """Bind and return a server (not yet serving).  Raises OSError if the port is held."""
     return StaticServer(host, port, Path(web_dir), Path(assets_dir))
+
+
+def is_wildcard_bind(address: str) -> bool:
+    """True when a bound address is INADDR_ANY / in6addr_any, however it was spelled."""
+    try:
+        return ipaddress.ip_address(address.partition("%")[0]).is_unspecified
+    except ValueError:
+        return False
 
 
 def url_for(host: str, port: int) -> str:
@@ -210,6 +224,14 @@ def main(argv: list[str] | None = None) -> int:
             print("Something already holds the shared port; stop it first.", file=sys.stderr)
         return 1
     bound_host, bound_port = server.server_address[:2]
+    if is_wildcard_bind(bound_host):
+        server.server_close()
+        print(
+            f"refusing to start: --host {host!r} resolves to the wildcard address {bound_host}.",
+            file=sys.stderr,
+        )
+        print("Pass this machine's own home-network address instead.", file=sys.stderr)
+        return 2
     print(f"serving {WEB_DIR} at / and {args.assets} at /assets/ (read-only)")
     print(f"open {url_for(bound_host, bound_port)}")
     print("stop with Ctrl-C")

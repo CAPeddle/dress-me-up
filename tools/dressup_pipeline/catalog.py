@@ -7,7 +7,9 @@ that stays out of the APK.
 Given a body list, the same build also writes `bodies.json` and `bodies/<id>.png`
 (KTD3). Both files carry one `build_id` and one `scale` block, so a reader can
 tell that its bodies and its items came out of the same run rather than from two
-builds that no longer share a scale.
+builds that no longer share a scale. A build that cuts no bodies clears an
+earlier build's `bodies.json` and `bodies/` instead, so the assets directory is
+always one whole build rather than two halves that disagree.
 
 **One factor for the whole build** (KTD4). Fitting each image into its own box
 destroyed relative size: a crown and a gown came out the same width, though the
@@ -22,6 +24,7 @@ from __future__ import annotations
 import json
 import math
 import secrets
+import shutil
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -138,6 +141,7 @@ class BuildSummary:
     by_category: dict[str, int] = field(default_factory=dict)
     by_group: dict[str, int] = field(default_factory=dict)
     bodies: int = 0
+    removed_stale_bodies: bool = False
     rows: dict[tuple[str, str], SourceRow] = field(default_factory=dict)
     scale: ScaleDecision | None = None
     tallest_body: int = 0
@@ -150,7 +154,10 @@ class BuildSummary:
         return self.rows.setdefault((group, pdf), SourceRow(group=group, pdf=pdf))
 
     def as_report(self) -> str:
-        lines = [f"{self.written} of {self.total} items written", f"  bodies: {self.bodies}"]
+        bodies = f"  bodies: {self.bodies}"
+        if self.removed_stale_bodies:
+            bodies += " (removed a stale bodies.json from an earlier build)"
+        lines = [f"{self.written} of {self.total} items written", bodies]
         for reason, count in sorted(self.skipped.items(), key=lambda kv: -kv[1]):
             lines.append(f"  skipped {count:>4}  {reason}")
         if self.by_group:
@@ -347,6 +354,8 @@ def build_catalog(
 
     if cuts:
         summary.bodies = _write_bodies(cuts, assets_dir, build_id, decision)
+    else:
+        summary.removed_stale_bodies = _remove_stale_bodies(assets_dir)
 
     catalog = {
         "version": CATALOG_VERSION,
@@ -369,6 +378,24 @@ def _refuse_unbodied_groups(bodies_list: Path, item_groups: set[str], listed_gro
             f"items were written for group(s) {', '.join(unbodied)} but {bodies_list} lists no body for them; "
             "nothing in that group could be dressed"
         )
+
+
+def _remove_stale_bodies(assets_dir: Path) -> bool:
+    """Clear a previous build's bodies when this one cut none.
+
+    catalog.json always gets a fresh build_id, so a bodies.json left over from an
+    earlier run is a pair no reader will accept — the web version refuses the
+    mismatch and cannot say why. The assets directory is the last build, whole:
+    a catalog-only build leaves a catalog only. Nothing but the two paths this
+    stage itself writes is ever removed.
+    """
+    bodies_json = assets_dir / "bodies.json"
+    bodies_dir = assets_dir / BODIES_SUBDIR
+    removed = bodies_json.is_file() or bodies_dir.is_dir()
+    bodies_json.unlink(missing_ok=True)
+    if bodies_dir.is_dir():
+        shutil.rmtree(bodies_dir)
+    return removed
 
 
 def _write_bodies(

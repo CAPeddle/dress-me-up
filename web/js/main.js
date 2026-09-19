@@ -199,7 +199,11 @@ function layoutPlaced(body) {
   if (elements.length === 0) return;
   const frame = bodyFrame(body);
   const placements = state.saved.placements.filter((p) => p.body === body).sort((a, b) => a.z - b.z);
-  elements.forEach((element, k) => placeElement(element, placements[k], frame));
+  // A live drag is left alone: placeElement would clear the translate its onMove
+  // is steering, and releasePlaced recomputes against a fresh frame anyway.
+  elements.forEach((element, k) => {
+    if (!element.classList.contains("dragging")) placeElement(element, placements[k], frame);
+  });
 }
 
 function attachPlacedDrag(element, placement) {

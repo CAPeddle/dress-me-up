@@ -310,19 +310,71 @@ def test_crown_and_gown_keep_their_page_proportions(page, base_url):
     assert gown["height"] / crown["height"] == pytest.approx(500 / 90, rel=0.02)
 
 
+# The body image and the placed Item are read in the same tick: the viewport is
+# resized before the resize handler relays the Item out, so waiting on the image
+# alone can read a placement that has not caught up yet.
+RELAID_OUT = """
+([item, fx, fy, tol]) => {
+    const img = document.querySelector("[data-rig-kind='body'][data-rig-slot='0'] > img");
+    const node = document.querySelector(
+        `[data-rig-stage='0'] [data-rig-kind='placed'][data-rig-slot='${item}']`);
+    if (!img || !node) return false;
+    const box = img.getBoundingClientRect();
+    if (box.height >= 500) return false;   // the resize itself has not landed
+    const r = node.getBoundingClientRect();
+    return Math.abs(r.x + r.width / 2 - (box.x + fx * box.width)) <= tol
+        && Math.abs(r.y + r.height / 2 - (box.y + fy * box.height)) <= tol;
+}
+"""
+
+
 def test_placed_items_relayout_on_resize(page, base_url):
     open_game(page, base_url)
     place_from_supply(page, 0, 0, 0.5, 0.25)
     page.set_viewport_size({"width": 1024, "height": 640})
-    page.wait_for_function(
-        "() => document.querySelector(\"[data-rig-kind='body'][data-rig-slot='0'] > img\").getBoundingClientRect().height < 500"
-    )
+    page.wait_for_function(RELAID_OUT, arg=[0, 0.5, 0.25, 2.0])
     box = body_box(page, 0)
     cx, cy = center(placed(page, 0, 0).bounding_box())
     assert approx(cx, box["x"] + 0.5 * box["width"], 2.0)
     assert approx(cy, box["y"] + 0.25 * box["height"], 2.0)
     factor = box["height"] / BODIES["bodies"][0]["height"]
     assert approx(placed(page, 0, 0).bounding_box()["height"], 90 * factor, 1.0)
+
+
+def test_resize_mid_drag_keeps_the_live_transform_and_commits_the_drag_delta(page, base_url):
+    """A relayout must not wipe a live drag's transform: what is shown would stop
+    following the finger, and the commit would still apply the whole delta."""
+    open_game(page, base_url)
+    place_from_supply(page, 0, 0, 0.5, 0.25)   # the crown, dragged
+    place_from_supply(page, 4, 0, 0.5, 0.8)    # a bystander, proves the relayout ran
+    dragged = placed(page, 0, 0)
+    bystander = placed(page, 0, 4)
+    before_dragged = dragged.bounding_box()
+    before_bystander = bystander.bounding_box()
+    x, y = center(before_dragged)
+    page.mouse.move(x, y)
+    page.mouse.down()
+    page.mouse.move(x + 60, y + 40, steps=4)   # past the 12 px slop: the drag is live
+    assert "translate" in dragged.evaluate("el => el.style.transform")
+
+    page.set_viewport_size({"width": 1024, "height": 640})
+    # The bystander is the signal: it is the element layoutPlaced does touch, so
+    # once it has moved the resize handler has certainly run.
+    page.wait_for_function(RELAID_OUT, arg=[4, 0.5, 0.8, 2.0])
+    assert bystander.bounding_box()["height"] < before_bystander["height"]
+    # ... and the live drag came through it with its transform intact.
+    assert "translate" in dragged.evaluate("el => el.style.transform"), "relayout cleared a live drag"
+
+    page.mouse.move(x + 60, y + 90, steps=4)
+    page.mouse.up()
+    # releasePlaced translates the placement by the drag delta against a fresh
+    # frame, so the committed centre is the old fraction shifted by dx/dy over the
+    # post-resize body box -- an Item is grabbed anywhere, not re-centred on the finger.
+    assert placed(page, 0, 0).count() == 1, "the release fell outside the board region"
+    box = body_box(page, 0)
+    crown = next(p for p in read_store(page)["placements"] if p["item"] == 0)
+    assert approx(crown["x"], 0.5 + 60 / box["width"], 0.01), (crown, box)
+    assert approx(crown["y"], 0.25 + 90 / box["height"], 0.01), (crown, box)
 
 
 # ---------------------------------------------------------------- integration
