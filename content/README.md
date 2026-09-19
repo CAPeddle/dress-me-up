@@ -6,7 +6,12 @@ Not tracked by git — see `.gitignore`.
   `scripts/fetch-drive-content.sh`. Subfolders `Fantasy` (9 PDFs), `Fantasy w
   Boy` (8), `Knight` (1), each also holding raw JPG captures of the same pages.
   Drive is the backup; this is a working copy.
-- `pdfs/` — whichever scans were selected to feed the pipeline.
+- `pdfs/` — a scratch drop for PDFs that are not part of a `source/` set: the
+  synthetic `fantasy-smoke.pdf` from `tools/make_smoke_pdf.py`, or a one-off
+  hand-named scan. The pipeline normally runs straight off `source/<Set>/*.pdf`,
+  because the classifier takes an item's group from the containing folder first
+  and the timestamp filenames carry nothing; a PDF here only classifies if its
+  own name says which theme it is.
 - `triage/` — per-PDF page manifests (`<stem>.json`: rotation and page-type
   verdict per page), hand-written overrides (`<stem>.overrides.json`) and one
   contact sheet per verdict (`<stem>.<verdict>.png`), written by

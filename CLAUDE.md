@@ -27,8 +27,9 @@ retired laptop (KTD-15). Consequences that will bite otherwise:
   expect import and API-surface errors on the first build. Do not describe the
   app as working. Run `scripts/setup-ubuntu.sh` first.
 - **`content/` is empty.** The scans and the 219 QA'd items did not survive.
-  `build_catalog.py` produces an empty catalog until real PDFs land in
-  `content/pdfs/`; `tools/make_smoke_pdf.py` generates a synthetic stand-in.
+  `build_catalog.py` produces an empty catalog until real PDFs land under
+  `content/source/<Set>/`; `tools/make_smoke_pdf.py` writes a synthetic stand-in
+  to `content/pdfs/` instead.
 - **`docs/ROADMAP.md` and `docs/TESTING.md` describe the LOST ORIGINAL**, not
   this tree. Where they disagree with what is on disk, neither is automatically
   right — check before "fixing" code to match a doc.
@@ -50,11 +51,18 @@ Pipeline:
 cd tools && .venv/bin/python -m pytest        # pipeline + web tests
 
 tools/.venv/bin/python tools/make_smoke_pdf.py            # synthetic stand-in for a scan
-tools/.venv/bin/python tools/triage_pages.py content/pdfs/*.pdf   # manifests + contact sheets -> content/triage/
-tools/.venv/bin/python tools/extract_pdf.py content/pdfs/*.pdf --triage   # rotate + cut only item sheets
+tools/.venv/bin/python tools/triage_pages.py content/source/<Set>/*.pdf   # manifests + contact sheets -> content/triage/
+tools/.venv/bin/python tools/extract_pdf.py content/source/<Set>/*.pdf --triage   # rotate + cut only item sheets
 tools/.venv/bin/python tools/classify_and_qa.py --min-quality 0.90
 tools/.venv/bin/python tools/build_catalog.py --min-quality 0.90 --group fantasy --body-height 1000
 ```
+
+Real scans live under `content/source/<Set>/` (`Fantasy`, `Knight`, ...) because
+`HeuristicClassifier._group` takes the group from the containing folder first —
+scanner apps name files by timestamp, so the folder is usually the only place the
+theme survives. The filename is the fallback, which is how the smoke PDF at
+`content/pdfs/fantasy-smoke.pdf` still classifies, and how a PDF labelled by hand
+with its theme works from any folder. Substitute whichever path the PDFs are in.
 
 App (needs the setup script to have run):
 
@@ -71,18 +79,25 @@ Requires `local.properties` with `sdk.dir=...` (gitignored).
 **One contract, one direction.** The pipeline writes
 `app/src/main/assets/catalog.json` plus downsampled item PNGs; the app reads
 them. Nothing else crosses. `CatalogItemDto` in `CatalogRepository.kt` and
-`CatalogItem` in `dressup_pipeline/models.py` are the two ends of that contract —
-change one, change the other. `bodies.json` plus `bodies/` is the second file of
-that contract, written by the same build; both files carry the same `build_id`
-and the same `scale` block, so a reader can refuse a mismatched pair rather than
-draw a board at two different scales.
+`CatalogItem` in `dressup_pipeline/models.py` are the two ends of that contract,
+and `web/js/catalog.js` (with `web/js/main.js`) is a third consumer reading the
+same two files — change one, change all three. `bodies.json` plus `bodies/` is
+the second file of that contract, written by the same build; both files carry
+the same `build_id` and the same `scale` block, so a reader can refuse a
+mismatched pair rather than draw a board at two different scales.
 
 **Sidecars are the pipeline's unit of state** (KTD-12). Every extracted item gets
 `<id>.png` plus `<id>.sidecar.json` beside it. Stages only ever *add* fields:
 extract writes geometry, classify adds category/group, QA adds quality/accepted/
 notes, build reads. So any stage can be re-run alone, a half-processed corpus is
 still valid, and a rejected item can always explain itself. Never make a stage
-rewrite a field an earlier stage owns.
+rewrite a field an earlier stage owns. Extract is the one stage that also
+*removes*: re-extracting a PDF replaces all of that PDF's outputs, so a page
+triage no longer calls an item sheet, and a cutout a re-run no longer finds,
+disappear instead of lingering for the catalog build to ingest. Downstream
+fields survive that only where the item comes back with identical geometry —
+same page, bbox, page size and DPI. A cutout that moved is a different item and
+has to be classified and QA'd again.
 
 **Page dimensions live in the sidecar, not on the CLI.** `shape_of()` classifies
 from geometry relative to the page, and passing those dimensions separately made
