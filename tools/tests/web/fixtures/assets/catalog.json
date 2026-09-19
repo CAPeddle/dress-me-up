@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "min_quality": 0.9,
+  "build_id": "fixture-0001",
+  "scale": {
+    "target_body_height_px": 1000,
+    "factor": 0.5,
+    "source_dpi": 300,
+    "bound": "item_ceiling"
+  },
+  "items": [
+    {
+      "id": "hat_crown",
+      "category": "hat",
+      "group": "fantasy",
+      "image": "items/hat_crown.png",
+      "width": 120,
+      "height": 90,
+      "quality": 0.97
+    },
+    {
+      "id": "hat_cap",
+      "category": "hat",
+      "group": "fantasy",
+      "image": "items/hat_cap.png",
+      "width": 110,
+      "height": 70,
+      "quality": 0.93
+    },
+    {
+      "id": "top_blouse",
+      "category": "top",
+      "group": "fantasy",
+      "image": "items/top_blouse.png",
+      "width": 200,
+      "height": 180,
+      "quality": 0.95
+    },
+    {
+      "id": "dress_gown",
+      "category": "dress",
+      "group": "fantasy",
+      "image": "items/dress_gown.png",
+      "width": 260,
+      "height": 500,
+      "quality": 0.96
+    },
+    {
+      "id": "shoes_boots",
+      "category": "shoes",
+      "group": "fantasy",
+      "image": "items/shoes_boots.png",
+      "width": 140,
+      "height": 80,
+      "quality": 0.92
+    },
+    {
+      "id": "accessory_wand",
+      "category": "accessory",
+      "group": "fantasy",
+      "image": "items/accessory_wand.png",
+      "width": 40,
+      "height": 220,
+      "quality": 0.91
+    }
+  ]
+}
