@@ -1,0 +1,5 @@
+{
+  "_comment": "Hand-kept list of the Base Body pages the pipeline cuts (KTD3). Each entry: \"id\" is a stable string the app and the web version key on, never a sequence number; \"pdf\" is the scan's basename, found anywhere under content/source; \"page\" is 0-indexed; \"group\" is one of the pipeline's GROUPS; \"region\" is which doll on the page counting from the left (0-indexed), or null when the page holds one doll. A page with two dolls of similar height is refused until \"region\" says which one. Populated after the parent has looked at the triage contact sheets.",
+  "version": 1,
+  "bodies": []
+}

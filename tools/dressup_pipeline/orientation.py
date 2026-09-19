@@ -38,6 +38,8 @@ import numpy as np
 from PIL import Image
 from scipy import ndimage
 
+from .models import BBox
+
 # Everything below is measured at this longest-side pixel size, so a page renders
 # to the same decision at 100 dpi as at 300. The morphology below uses fixed
 # pixel structuring elements, and at much less than this the closing starts
@@ -200,14 +202,23 @@ def measure_orientation(image: Image.Image) -> Orientation:
 
 
 def _page_content(image: Image.Image) -> np.ndarray | None:
-    """Working-scale luminance, cropped to the scanned area of the page.
+    """Working-scale luminance, cropped to the scanned area of the page."""
+    located = _locate_page_content(image)
+    return None if located is None else located[0]
+
+
+def _locate_page_content(image: Image.Image) -> tuple[np.ndarray, int, int, float] | None:
+    """The working-scale page crop, with where it sits: (grey, x0, y0, scale).
 
     Scanner apps drop a square-ish scan into a portrait mediabox and leave the
     rest blank, so the mediabox says nothing about the page. Cropping to the
     non-paper pixels — ignoring specks, which survive in the blank margin as
-    stray dust — recovers the page the scanner actually saw.
+    stray dust — recovers the page the scanner actually saw. `x0`, `y0` are the
+    crop's origin in working-scale pixels and `scale` maps the caller's pixels
+    to working scale, so a measurement made here can be handed back in the
+    caller's own coordinates.
     """
-    scale = WORK_SIZE / max(image.size)
+    scale = min(1.0, WORK_SIZE / max(image.size))
     if scale < 1.0:
         size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
         image = image.resize(size, Image.BILINEAR)
@@ -224,7 +235,8 @@ def _page_content(image: Image.Image) -> np.ndarray | None:
     ys, xs = np.nonzero(substantial[labels])
     if not len(ys):
         return None
-    return grey[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
+    x0, y0 = int(xs.min()), int(ys.min())
+    return grey[y0 : ys.max() + 1, x0 : xs.max() + 1], x0, y0, scale
 
 
 def _find_objects(grey: np.ndarray) -> list[_Object]:
@@ -298,17 +310,52 @@ def _find_figure(objects: list[_Object], sideways: bool, page_area: float) -> _O
     equally elongated but hugs one edge — and unlike a blanket border test, it
     still finds the dolls that run off the top and bottom of the page.
     """
-    candidates = [
-        o
-        for o in objects
-        if not (o.touches_top_or_bottom if sideways else o.touches_left_or_right)
-        and o.upright != sideways
-        and FIGURE_MIN_ELONGATION <= o.elongation <= FIGURE_MAX_ELONGATION
-        and o.w * o.h >= FIGURE_MIN_BOX_FRAC * page_area
-    ]
+    candidates = [o for o in objects if _is_figure(o, sideways, page_area)]
     if not candidates:
         return None
     return max(candidates, key=lambda o: o.w * o.h)
+
+
+def _is_figure(o: _Object, sideways: bool, page_area: float) -> bool:
+    """The one definition of "doll-shaped" — see `_find_figure` for why each gate."""
+    return (
+        not (o.touches_top_or_bottom if sideways else o.touches_left_or_right)
+        and o.upright != sideways
+        and FIGURE_MIN_ELONGATION <= o.elongation <= FIGURE_MAX_ELONGATION
+        and o.w * o.h >= FIGURE_MIN_BOX_FRAC * page_area
+    )
+
+
+def find_figure_regions(image: Image.Image) -> list[tuple[BBox, np.ndarray]]:
+    """Every doll-shaped object on an upright page, in the image's own pixels.
+
+    The seam the bodies stage cuts through: a figure is whatever `_find_figure`
+    would consider, found by the same local-contrast segmentation, so a page
+    that orients by its doll also yields that doll as a body. Each result is
+    the figure's bounding box at full resolution and a boolean mask of the same
+    size, cropped to the box — the filled connected component, scaled back up
+    from working scale. Ordered left to right.
+    """
+    located = _locate_page_content(image)
+    if located is None:
+        return []
+    grey, x0, y0, scale = located
+    page_area = grey.shape[0] * grey.shape[1]
+
+    regions: list[tuple[BBox, np.ndarray]] = []
+    for o in sorted(_find_objects(grey), key=lambda o: o.x):
+        if not _is_figure(o, sideways=False, page_area=page_area):
+            continue
+        left = min(image.width, max(0, round((o.x + x0) / scale)))
+        top = min(image.height, max(0, round((o.y + y0) / scale)))
+        right = min(image.width, max(left, round((o.x + o.w + x0) / scale)))
+        bottom = min(image.height, max(top, round((o.y + o.h + y0) / scale)))
+        box = BBox(left, top, right - left, bottom - top)
+        if box.w == 0 or box.h == 0:
+            continue
+        mask = Image.fromarray(o.mask.astype(np.uint8) * 255).resize((box.w, box.h), Image.NEAREST)
+        regions.append((box, np.asarray(mask) > 0))
+    return regions
 
 
 def _head_position(figure: _Object, sideways: bool) -> float:
