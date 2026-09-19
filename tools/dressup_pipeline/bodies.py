@@ -97,8 +97,13 @@ def load_body_list(path: Path) -> list[BodyEntry]:
 
 
 def resolve_pdf(entry: BodyEntry, source_root: Path) -> Path:
-    """Find the entry's PDF anywhere under the source root by its basename."""
-    matches = sorted(source_root.rglob(entry.pdf))
+    """Find the entry's PDF anywhere under the source root by its basename.
+
+    The basename is matched literally, never as a glob: the list is hand-authored
+    against real scan filenames, and a name carrying `*` or `?` should come back
+    as "not found" rather than quietly resolving to some other book's PDF.
+    """
+    matches = sorted(p for p in source_root.rglob("*") if p.name == entry.pdf and p.is_file())
     if not matches:
         raise BodyError(f"body {entry.id!r}: PDF {entry.pdf!r} not found under {source_root}")
     if len(matches) > 1:
@@ -115,6 +120,9 @@ def shared_dpi(sidecar_root: Path) -> int:
     An unrecorded DPI (0, from a sidecar older than the field) is a value like
     any other: a corpus that mixes it with a real value cannot be trusted to
     share one scale, and the odd sidecars are named so they can be re-extracted.
+    A corpus where *nothing* records one agrees on 0, and 0 is reported as it
+    stands — it is a true statement about the corpus, and the catalog's scale
+    block says so. `render_dpi` is the caller that cannot accept it.
     With no sidecars at all there is nothing to agree with, and the extractor's
     default stands in.
     """
@@ -133,6 +141,26 @@ def shared_dpi(sidecar_root: Path) -> int:
         f"sidecars under {sidecar_root} disagree on dpi: most are {majority}, but {odd}; "
         "re-extract the odd ones so every image in the build shares one scale"
     )
+
+
+def render_dpi(sidecar_root: Path) -> int:
+    """`shared_dpi`, but for the caller that is about to render pages with it.
+
+    Reporting an unrecorded DPI as 0 is honest; rendering at it is not. PyMuPDF
+    reads dpi 0 as 72, so a corpus of sidecars older than the field would cut
+    every body at about a quarter of the size of the 300-dpi items beside it,
+    and nothing downstream would notice. The build refuses instead and says
+    which stage puts the number back.
+    """
+    dpi = shared_dpi(sidecar_root)
+    if dpi == 0:
+        unrecorded = sum(1 for _, sidecar in iter_sidecars(sidecar_root) if sidecar.dpi == 0)
+        raise BodyError(
+            f"none of the {unrecorded} sidecars under {sidecar_root} record the dpi they were "
+            "extracted at, so there is no scale to render the bodies at; "
+            "re-extract them with tools/extract_pdf.py"
+        )
+    return dpi
 
 
 # -- finding and cutting --------------------------------------------------------
@@ -188,9 +216,11 @@ def build_bodies(
     triage_dir: Path,
 ) -> tuple[list[BodyCut], int]:
     """Cut every body in the list, in list order; return them with the DPI used."""
-    dpi = shared_dpi(sidecar_root)
+    # An empty list renders nothing, so it asks only what the corpus agrees on;
+    # anything that will actually be rendered has to have a real DPI.
     if not entries:
-        return [], dpi
+        return [], shared_dpi(sidecar_root)
+    dpi = render_dpi(sidecar_root)
 
     cuts: list[BodyCut] = []
     # Both caches are per distinct PDF: the recursive glob behind `resolve_pdf`

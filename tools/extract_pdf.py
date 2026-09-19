@@ -16,7 +16,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from dressup_pipeline.extract import DEFAULT_DPI, DEFAULT_MIN_AREA_FRAC, extract_pdf
+from dressup_pipeline.extract import (
+    DEFAULT_DPI,
+    DEFAULT_MIN_AREA_FRAC,
+    ManifestCoverageError,
+    extract_pdf,
+)
 from dressup_pipeline.triage import Manifest, manifest_path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -50,9 +55,14 @@ def main(argv: list[str] | None = None) -> int:
             if not path.is_file():
                 parser.error(f"{pdf.name}: no triage manifest at {path}; run tools/triage_pages.py first")
             manifest = Manifest.read(path)
-        sidecars = extract_pdf(
-            pdf, args.out / pdf.stem, dpi=args.dpi, min_area_frac=args.min_area_frac, manifest=manifest
-        )
+        try:
+            sidecars = extract_pdf(
+                pdf, args.out / pdf.stem, dpi=args.dpi, min_area_frac=args.min_area_frac, manifest=manifest
+            )
+        except ManifestCoverageError as exc:
+            # A stale manifest is a user-fixable state, not a bug: say what to
+            # re-run rather than printing a traceback.
+            parser.error(str(exc))
         print(f"{pdf.name}: {len(sidecars)} items")
         total += len(sidecars)
 

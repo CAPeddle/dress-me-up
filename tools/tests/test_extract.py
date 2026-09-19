@@ -241,3 +241,168 @@ def test_cli_triage_flag_drives_extraction_from_the_manifest(tmp_path):
     assert [s.page for s in sidecars] == [1]
     assert (sidecars[0].page_width, sidecars[0].page_height) == (600, 400)
     assert sidecars[0].dpi == 72
+
+
+# -- re-extraction is a replacement, not an addition -------------------------
+
+
+def _multi_page_pdf(tmp_path, name, pages=2, size=(400, 600)):
+    """`pages` copies of the one-dark-square page in a single PDF."""
+    page = Image.new("RGB", size, "white")
+    for x in range(50, 150):
+        for y in range(50, 150):
+            page.putpixel((x, y), (20, 20, 20))
+    pdf = tmp_path / name
+    page.save(pdf, save_all=True, append_images=[page] * (pages - 1))
+    return pdf
+
+
+class _FixedRegions:
+    """A segmenter that returns exactly the boxes it was built with."""
+
+    def __init__(self, *boxes):
+        self.boxes = list(boxes)
+
+    def regions(self, image):
+        return self.boxes
+
+
+def _annotate(path, **fields):
+    """Do to a sidecar on disk what classify and QA do: add their own fields."""
+    from dressup_pipeline.models import Sidecar
+
+    sidecar = Sidecar.read(path)
+    for name, value in fields.items():
+        setattr(sidecar, name, value)
+    sidecar.write(path)
+
+
+QA_FIELDS = dict(
+    category="hat", group="fantasy", quality=0.93, accepted=True, notes=["checked by hand"]
+)
+
+
+def test_rerun_drops_a_page_triage_no_longer_calls_an_item_sheet(tmp_path):
+    """The stale-page leak: a re-verdicted page must not leave cutouts behind."""
+    from dressup_pipeline.extract import extract_pdf
+
+    pdf = _multi_page_pdf(tmp_path, "book.pdf")
+    out = tmp_path / "out"
+    first = extract_pdf(pdf, out, dpi=72, manifest=_manifest(("item_sheet", 0, None), ("item_sheet", 0, None)))
+    assert sorted(s.page for s in first) == [0, 1]
+
+    again = extract_pdf(pdf, out, dpi=72, manifest=_manifest(("base_body", 0, None), ("item_sheet", 0, None)))
+
+    assert [s.page for s in again] == [1]
+    assert not list(out.glob("book-p000-*"))
+    assert sorted(p.name for p in out.glob("book-p001-*")) == [
+        "book-p001-i000.png",
+        "book-p001-i000.sidecar.json",
+    ]
+
+
+def test_rerun_keeps_classify_and_qa_fields_when_the_cutout_is_unchanged(tmp_path):
+    from dressup_pipeline.extract import extract_pdf
+    from dressup_pipeline.models import Sidecar, SIDECAR_SUFFIX
+
+    pdf = _one_page_pdf(tmp_path)
+    out = tmp_path / "out"
+    (first,) = extract_pdf(pdf, out, dpi=72)
+    path = out / f"{first.item_id}{SIDECAR_SUFFIX}"
+    _annotate(path, **QA_FIELDS)
+
+    (again,) = extract_pdf(pdf, out, dpi=72)
+
+    for name, value in QA_FIELDS.items():
+        assert getattr(again, name) == value, name
+    on_disk = Sidecar.read(path)
+    assert on_disk.category == "hat" and on_disk.notes == ["checked by hand"]
+
+
+def test_rerun_at_a_different_dpi_does_not_carry_the_old_verdicts_over(tmp_path):
+    """A different cutout is a different item: it has to be classified again."""
+    from dressup_pipeline.extract import extract_pdf
+    from dressup_pipeline.models import SIDECAR_SUFFIX
+
+    pdf = _one_page_pdf(tmp_path)
+    out = tmp_path / "out"
+    (first,) = extract_pdf(pdf, out, dpi=72)
+    _annotate(out / f"{first.item_id}{SIDECAR_SUFFIX}", **QA_FIELDS)
+
+    (again,) = extract_pdf(pdf, out, dpi=144)
+
+    assert again.item_id == first.item_id  # same slot, different geometry
+    assert again.bbox.as_tuple() != first.bbox.as_tuple()
+    assert (again.category, again.group) == (None, None)
+    assert (again.quality, again.accepted) == (None, None)
+    assert again.notes == []
+
+
+def test_rerun_leaves_another_pdfs_outputs_in_the_same_directory_alone(tmp_path):
+    """Scoping is by `<stem>-p`, so a stem that merely starts the same survives."""
+    from dressup_pipeline.extract import extract_pdf
+    from dressup_pipeline.models import SIDECAR_SUFFIX
+
+    book = _one_page_pdf(tmp_path, name="book.pdf")
+    sibling = _one_page_pdf(tmp_path, name="book-two.pdf")
+    out = tmp_path / "out"
+    extract_pdf(book, out, dpi=72)
+    (kept,) = extract_pdf(sibling, out, dpi=72)
+    _annotate(out / f"{kept.item_id}{SIDECAR_SUFFIX}", **QA_FIELDS)
+
+    extract_pdf(book, out, dpi=72)
+
+    assert (out / f"{kept.item_id}.png").is_file()
+    assert (out / f"{kept.item_id}{SIDECAR_SUFFIX}").is_file()
+    assert (out / f"{kept.item_id}{SIDECAR_SUFFIX}").read_text().count("checked by hand") == 1
+
+
+def test_rerun_removes_files_a_run_that_finds_fewer_regions_would_strand(tmp_path):
+    from dressup_pipeline.extract import extract_pdf
+
+    pdf = _one_page_pdf(tmp_path, name="book.pdf")
+    out = tmp_path / "out"
+    extract_pdf(pdf, out, dpi=72, segmenter=_FixedRegions(BBox(0, 0, 80, 80), BBox(100, 100, 80, 80)))
+    # A cutout whose sidecar never got written, as a half-finished run leaves it.
+    (out / "book-p000-i009.png").write_bytes(b"")
+
+    again = extract_pdf(pdf, out, dpi=72, segmenter=_FixedRegions(BBox(0, 0, 80, 80)))
+
+    assert len(again) == 1
+    assert sorted(p.name for p in out.iterdir()) == ["book-p000-i000.png", "book-p000-i000.sidecar.json"]
+
+
+# -- a manifest that no longer matches its PDF -------------------------------
+
+
+def test_a_manifest_short_of_pages_is_refused_before_anything_is_deleted(tmp_path):
+    from dressup_pipeline.extract import ManifestCoverageError, extract_pdf
+
+    pdf = _multi_page_pdf(tmp_path, "book.pdf", pages=3)
+    out = tmp_path / "out"
+    extract_pdf(pdf, out, dpi=72, manifest=_manifest(*[("item_sheet", 0, None)] * 3))
+    before = sorted(path.name for path in out.iterdir())
+
+    with pytest.raises(ManifestCoverageError) as excinfo:
+        extract_pdf(pdf, out, dpi=72, manifest=_manifest(("item_sheet", 0, None)))
+
+    message = str(excinfo.value)
+    assert "book.pdf" in message and "1 page" in message and "3" in message
+    assert "triage_pages.py" in message
+    # The refusal happens before the sweep, so the last good extraction stands.
+    assert sorted(p.name for p in out.iterdir()) == before
+
+
+def test_cli_reports_a_stale_manifest_as_a_message_not_a_traceback(tmp_path, capsys):
+    import extract_pdf as cli
+
+    pdf = _multi_page_pdf(tmp_path, "two.pdf")
+    triage = tmp_path / "triage"
+    triage.mkdir()
+    _manifest(("item_sheet", 0, None)).write(triage / "two.json")
+
+    with pytest.raises(SystemExit):
+        cli.main([str(pdf), "--out", str(tmp_path / "out"), "--dpi", "72", "--triage", str(triage)])
+
+    err = capsys.readouterr().err
+    assert "two.pdf" in err and "triage_pages.py" in err

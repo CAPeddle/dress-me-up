@@ -19,6 +19,7 @@ from dressup_pipeline.bodies import (
     choose_figure,
     cut_body,
     load_body_list,
+    render_dpi,
     resolve_pdf,
     shared_dpi,
 )
@@ -389,3 +390,62 @@ def test_build_bodies_refuses_disagreeing_sidecar_dpis(tmp_path, two_page_book):
 def test_rendering_back_the_synthetic_pdf_keeps_the_page_size(tmp_path, two_page_book):
     """Guards the fixture: PIL writes at 72 dpi, so 72 dpi renders pixel-for-pixel."""
     assert render_page(two_page_book, 0, dpi=72).size == (600, 800)
+
+
+def test_shared_dpi_reports_a_corpus_that_records_no_dpi_at_all_as_zero(tmp_path):
+    """0 is a true statement about the corpus; the catalog's scale block says it."""
+    write_sidecar(tmp_path / "sidecars", "old-a", 0)
+    write_sidecar(tmp_path / "sidecars", "old-b", 0)
+
+    assert shared_dpi(tmp_path / "sidecars") == 0
+
+
+def test_render_dpi_refuses_a_corpus_where_nothing_records_a_dpi(tmp_path):
+    """Reporting 0 is honest; rendering at it is not — PyMuPDF reads it as 72."""
+    write_sidecar(tmp_path / "sidecars", "old-a", 0)
+    write_sidecar(tmp_path / "sidecars", "old-b", 0)
+
+    with pytest.raises(BodyError) as excinfo:
+        render_dpi(tmp_path / "sidecars")
+
+    message = str(excinfo.value)
+    assert "2" in message and "extract_pdf.py" in message
+
+
+def test_build_bodies_refuses_to_cut_a_body_at_an_unrecorded_dpi(tmp_path):
+    source = tmp_path / "source" / "Fantasy"
+    source.mkdir(parents=True)
+    pdf = save_pdf(source / "book.pdf", make_doll_page(dolls=(ONE_DOLL,)))
+    write_manifest(tmp_path / "triage", pdf, [0])
+    write_sidecar(tmp_path / "sidecars", "legacy", 0)
+    listing = write_list(tmp_path / "list.json", [
+        {"id": "fantasy-book-p00", "pdf": "book.pdf", "page": 0, "group": "fantasy", "region": None},
+    ])
+
+    with pytest.raises(BodyError, match="extract_pdf.py"):
+        build_bodies(load_body_list(listing), tmp_path / "source", tmp_path / "sidecars", tmp_path / "triage")
+
+
+def test_resolve_pdf_names_both_folders_when_a_basename_is_ambiguous(tmp_path):
+    for folder in ("Fantasy", "Knight"):
+        pdf = tmp_path / "source" / folder / "x.pdf"
+        pdf.parent.mkdir(parents=True)
+        pdf.write_bytes(b"")
+
+    with pytest.raises(BodyError) as excinfo:
+        resolve_pdf(entry(pdf="x.pdf"), tmp_path / "source")
+
+    message = str(excinfo.value)
+    assert "Fantasy" in message and "Knight" in message
+
+
+def test_resolve_pdf_treats_the_basename_literally_not_as_a_glob(tmp_path):
+    """A hand-authored name is a filename; `*.pdf` names no file that exists."""
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "x.pdf").write_bytes(b"")
+
+    with pytest.raises(BodyError) as excinfo:
+        resolve_pdf(entry(pdf="*.pdf"), source)
+
+    assert "not found" in str(excinfo.value)
