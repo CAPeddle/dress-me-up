@@ -152,6 +152,7 @@ def extract_pdf(
             sidecar = Sidecar(
                 item_id=item_id,
                 source_pdf=pdf_path.name,
+                source_folder=pdf_path.parent.name,
                 page=page_no,
                 bbox=box,
                 image=image_name,

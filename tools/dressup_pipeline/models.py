@@ -70,6 +70,10 @@ class Sidecar:
     page: int
     bbox: BBox
     image: str  # path to the cutout PNG, relative to the sidecar's own directory
+    # Folder the source file sat in. Scans arrive timestamp-named
+    # ("20260509081623.pdf"), so the folder is usually the only thing carrying
+    # the theme — see HeuristicClassifier._group.
+    source_folder: str = ""
     # Size of the page render this was cut from. Recorded here rather than passed
     # to later stages, so classification can never be run against the wrong
     # dimensions and silently mis-slot every item.

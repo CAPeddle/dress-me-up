@@ -134,3 +134,12 @@ still open.
 
 Decisions are recorded as `KTD-n` in `docs/memory/decisions.md`, append-only;
 supersede rather than delete. Cite the ID instead of restating the decision.
+
+`docs/solutions/` holds documented solutions to past problems (bugs, best
+practices, workflow patterns), organised by category with YAML frontmatter
+(`module`, `tags`, `problem_type`). Relevant when implementing or debugging in
+an area something has already been written about.
+
+`CONCEPTS.md` at the repo root is the shared domain vocabulary — entities, named
+processes, and status concepts. Relevant when orienting to the codebase or
+discussing domain concepts.

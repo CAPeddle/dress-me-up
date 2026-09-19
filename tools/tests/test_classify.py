@@ -75,3 +75,35 @@ def test_shape_of_refuses_a_sidecar_with_no_recorded_page_size():
 
     with pytest.raises(ValueError, match="no page dimensions recorded"):
         shape_of(stale)
+
+
+@pytest.mark.parametrize(
+    "folder, expected",
+    [
+        ("Fantasy", "fantasy"),
+        ("Fantasy w Boy", "fantasy"),
+        ("Knight ", "knight"),          # note the trailing space, as in Drive
+        ("dress me up", "misc"),
+    ],
+)
+def test_group_comes_from_the_folder_when_the_file_is_timestamp_named(folder, expected):
+    """Real scans are named 20260509081623.pdf — only the folder carries the theme."""
+    sidecar = Sidecar(
+        item_id="x", source_pdf="20260509081623.pdf", source_folder=folder,
+        page=0, bbox=BBox(0, 0, 100, 100), image="x.png",
+        page_width=1000, page_height=1000,
+    )
+    shape = Shape(aspect=1.0, area_frac=0.03, centre_y=0.5)
+
+    assert HeuristicClassifier().classify(sidecar, shape)[1] == expected
+
+
+def test_filename_still_wins_when_the_folder_says_nothing():
+    sidecar = Sidecar(
+        item_id="x", source_pdf="knight-book.pdf", source_folder="scans",
+        page=0, bbox=BBox(0, 0, 100, 100), image="x.png",
+        page_width=1000, page_height=1000,
+    )
+    shape = Shape(aspect=1.0, area_frac=0.03, centre_y=0.5)
+
+    assert HeuristicClassifier().classify(sidecar, shape)[1] == "knight"

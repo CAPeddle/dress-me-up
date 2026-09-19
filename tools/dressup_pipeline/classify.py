@@ -80,11 +80,26 @@ class HeuristicClassifier:
         return "top" if shape.centre_y < 0.55 else "bottom"
 
     def _group(self, sidecar: Sidecar) -> str:
-        name = sidecar.source_pdf.lower()
-        for hint, group in sorted(GROUP_HINTS.items(), key=lambda kv: -len(kv[0])):
-            if hint in name:
+        """Folder first, then filename.
+
+        Scanner apps name files by timestamp, so the containing folder ("Fantasy",
+        "Fantasy w Boy", "Knight ") is normally the only place the theme survives.
+        Filename is kept as a fallback for hand-named files.
+        """
+        for candidate in (sidecar.source_folder, sidecar.source_pdf):
+            group = self._match(candidate)
+            if group:
                 return group
         return "misc"
+
+    @staticmethod
+    def _match(text: str) -> str | None:
+        haystack = text.lower()
+        # Longest hint first, so "princess" is not shadowed by a shorter match.
+        for hint, group in sorted(GROUP_HINTS.items(), key=lambda kv: -len(kv[0])):
+            if hint in haystack:
+                return group
+        return None
 
 
 def classify_sidecar(sidecar: Sidecar, shape: Shape, classifier: Classifier | None = None) -> Sidecar:
