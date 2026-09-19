@@ -48,7 +48,7 @@ def test_images_carry_catalog_dimensions(page, base_url):
     assert tile_img.get_attribute("height") == str(first["height"])
     assert tile_img.get_attribute("src").endswith("assets/" + first["image"])
     assert tile_img.get_attribute("draggable") == "false"
-    body_img = page.locator("[data-rig-kind='body'][data-rig-slot='0'] img")
+    body_img = page.locator("[data-rig-kind='body'][data-rig-slot='0'] > img")
     assert body_img.get_attribute("width") == str(BODIES["bodies"][0]["width"])
     assert body_img.get_attribute("src").endswith("assets/" + BODIES["bodies"][0]["image"])
     # Wait on the condition asserted, not on `complete`, which flips first.
@@ -80,7 +80,7 @@ def test_regions_and_hand_slots_exist(page, base_url):
 def test_rig_values_are_enumerated_kinds_and_integer_indices(page, base_url):
     open_game(page, base_url)
     kinds = set(page.eval_on_selector_all("[data-rig-kind]", "els => els.map(e => e.dataset.rigKind)"))
-    assert kinds <= {"tile", "hand-slot", "hand-tile", "pager-thumb", "body", "star", "name"}
+    assert kinds <= {"tile", "hand-slot", "hand-tile", "pager-thumb", "body", "star", "name", "placed"}
     slots = page.eval_on_selector_all("[data-rig-slot]", "els => els.map(e => e.dataset.rigSlot)")
     assert all(s.isdigit() for s in slots)
     stages = page.eval_on_selector_all("[data-rig-stage]", "els => els.map(e => e.dataset.rigStage)")
