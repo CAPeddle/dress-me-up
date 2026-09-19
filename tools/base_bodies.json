@@ -1,5 +1,125 @@
 {
   "_comment": "Hand-kept list of the Base Body pages the pipeline cuts (KTD3). Each entry: \"id\" is a stable string the app and the web version key on, never a sequence number; \"pdf\" is the scan's basename, found anywhere under content/source; \"page\" is 0-indexed; \"group\" is one of the pipeline's GROUPS; \"region\" is which doll on the page counting from the left (0-indexed), or null when the page holds one doll. A page with two dolls of similar height is refused until \"region\" says which one. Populated after the parent has looked at the triage contact sheets.",
   "version": 1,
-  "bodies": []
+  "bodies": [
+    {
+      "id": "fantasy-075945-p00",
+      "pdf": "20260509075945.pdf",
+      "page": 0,
+      "group": "fantasy",
+      "region": null
+    },
+    {
+      "id": "fantasy-075945-p01",
+      "pdf": "20260509075945.pdf",
+      "page": 1,
+      "group": "fantasy",
+      "region": null
+    },
+    {
+      "id": "fantasy-075945-p02",
+      "pdf": "20260509075945.pdf",
+      "page": 2,
+      "group": "fantasy",
+      "region": null
+    },
+    {
+      "id": "fantasy-075945-p03",
+      "pdf": "20260509075945.pdf",
+      "page": 3,
+      "group": "fantasy",
+      "region": null
+    },
+    {
+      "id": "fantasy-075945-p04",
+      "pdf": "20260509075945.pdf",
+      "page": 4,
+      "group": "fantasy",
+      "region": null
+    },
+    {
+      "id": "fantasy-075945-p05",
+      "pdf": "20260509075945.pdf",
+      "page": 5,
+      "group": "fantasy",
+      "region": null
+    },
+    {
+      "id": "fantasy-075945-p06",
+      "pdf": "20260509075945.pdf",
+      "page": 6,
+      "group": "fantasy",
+      "region": null
+    },
+    {
+      "id": "fantasy-075945-p08",
+      "pdf": "20260509075945.pdf",
+      "page": 8,
+      "group": "fantasy",
+      "region": null
+    },
+    {
+      "id": "fantasy-075945-p09",
+      "pdf": "20260509075945.pdf",
+      "page": 9,
+      "group": "fantasy",
+      "region": null
+    },
+    {
+      "id": "fantasy-075945-p11",
+      "pdf": "20260509075945.pdf",
+      "page": 11,
+      "group": "fantasy",
+      "region": null
+    },
+    {
+      "id": "fantasy-171340-p00",
+      "pdf": "20260515171340.pdf",
+      "page": 0,
+      "group": "fantasy",
+      "region": null
+    },
+    {
+      "id": "fantasy-171340-p01",
+      "pdf": "20260515171340.pdf",
+      "page": 1,
+      "group": "fantasy",
+      "region": null
+    },
+    {
+      "id": "fantasy-171340-p02",
+      "pdf": "20260515171340.pdf",
+      "page": 2,
+      "group": "fantasy",
+      "region": null
+    },
+    {
+      "id": "fantasy-171340-p03",
+      "pdf": "20260515171340.pdf",
+      "page": 3,
+      "group": "fantasy",
+      "region": null
+    },
+    {
+      "id": "fantasy-171340-p04",
+      "pdf": "20260515171340.pdf",
+      "page": 4,
+      "group": "fantasy",
+      "region": null
+    },
+    {
+      "id": "fantasy-171340-p05",
+      "pdf": "20260515171340.pdf",
+      "page": 5,
+      "group": "fantasy",
+      "region": null
+    },
+    {
+      "id": "fantasy-171340-p06",
+      "pdf": "20260515171340.pdf",
+      "page": 6,
+      "group": "fantasy",
+      "region": null
+    }
+  ]
 }
