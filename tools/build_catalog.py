@@ -7,6 +7,11 @@ Writes into app/src/main/assets/ by default — the only directory the app reads
 When tools/base_bodies.json lists any bodies (or --bodies names another list),
 the same run cuts them from their triaged pages under --source and writes
 bodies.json + bodies/<id>.png beside the catalog.
+
+Every image in one build is scaled by one factor (KTD4), aimed at --body-height
+for the tallest Base Body and bounded by the Item ceiling, so a crown and a gown
+keep the sizes the page prints them at. The run reports the factor, the bound
+that chose it, and a per-source-PDF table of the sizes that decided it.
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from dressup_pipeline.bodies import BodyError, load_body_list
-from dressup_pipeline.catalog import DEFAULT_MAX_PX, build_catalog
+from dressup_pipeline.catalog import DEFAULT_BODY_HEIGHT_PX, build_catalog
 from dressup_pipeline.models import GROUPS
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -42,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--assets", type=Path, default=DEFAULT_ASSETS, help="asset output dir (default: app/src/main/assets)")
     parser.add_argument("--min-quality", type=float, default=0.90, help="reject items scoring below this (default: 0.90)")
     parser.add_argument("--group", action="append", choices=GROUPS, dest="groups", help="restrict to a group; repeatable")
-    parser.add_argument("--max-px", type=int, default=DEFAULT_MAX_PX, help=f"longest edge after downsampling (default: {DEFAULT_MAX_PX})")
+    parser.add_argument("--body-height", type=int, default=DEFAULT_BODY_HEIGHT_PX, help=f"height the tallest Base Body is scaled to, in px (default: {DEFAULT_BODY_HEIGHT_PX})")
     parser.add_argument("--bodies", type=Path, default=None, help="base body list (default: tools/base_bodies.json when it lists any)")
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE, help="scan root the body PDFs live under (default: content/source)")
     parser.add_argument("--triage", type=Path, default=DEFAULT_TRIAGE, help="triage manifests for the body pages (default: content/triage)")
@@ -52,6 +57,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"sidecar root does not exist: {args.sidecars}")
     if not 0.0 <= args.min_quality <= 1.0:
         parser.error("--min-quality must be between 0.0 and 1.0")
+    if args.body_height <= 0:
+        parser.error("--body-height must be a positive number of pixels")
 
     try:
         bodies_list = args.bodies if args.bodies is not None else _default_bodies_list()
@@ -62,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
             assets_dir=args.assets,
             min_quality=args.min_quality,
             groups=set(args.groups) if args.groups else None,
-            max_px=args.max_px,
+            target_body_height=args.body_height,
             bodies_list=bodies_list,
             source_root=args.source,
             triage_dir=args.triage,

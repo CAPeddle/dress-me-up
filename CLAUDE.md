@@ -47,13 +47,13 @@ Environment (run this first — it is the whole toolchain in one script):
 Pipeline:
 
 ```bash
-cd tools && .venv/bin/python -m pytest        # 48 tests
+cd tools && .venv/bin/python -m pytest        # pipeline + web tests
 
 tools/.venv/bin/python tools/make_smoke_pdf.py            # synthetic stand-in for a scan
 tools/.venv/bin/python tools/triage_pages.py content/pdfs/*.pdf   # manifests + contact sheets -> content/triage/
 tools/.venv/bin/python tools/extract_pdf.py content/pdfs/*.pdf --triage   # rotate + cut only item sheets
 tools/.venv/bin/python tools/classify_and_qa.py --min-quality 0.90
-tools/.venv/bin/python tools/build_catalog.py --min-quality 0.90 --group fantasy
+tools/.venv/bin/python tools/build_catalog.py --min-quality 0.90 --group fantasy --body-height 1000
 ```
 
 App (needs the setup script to have run):
@@ -72,7 +72,10 @@ Requires `local.properties` with `sdk.dir=...` (gitignored).
 `app/src/main/assets/catalog.json` plus downsampled item PNGs; the app reads
 them. Nothing else crosses. `CatalogItemDto` in `CatalogRepository.kt` and
 `CatalogItem` in `dressup_pipeline/models.py` are the two ends of that contract —
-change one, change the other.
+change one, change the other. `bodies.json` plus `bodies/` is the second file of
+that contract, written by the same build; both files carry the same `build_id`
+and the same `scale` block, so a reader can refuse a mismatched pair rather than
+draw a board at two different scales.
 
 **Sidecars are the pipeline's unit of state** (KTD-12). Every extracted item gets
 `<id>.png` plus `<id>.sidecar.json` beside it. Stages only ever *add* fields:
@@ -113,7 +116,10 @@ problem needs.
   catalog is never fully decoded — `DressUpScreen` preloads `TRAY_PRELOAD` (48)
   items. Windowed loading tied to scroll position is Phase 3 work. The
   `CatalogRepository` bitmap cache is currently unbounded; that needs a cap
-  before the catalog gets large.
+  before the catalog gets large. The 512px edge is enforced by the catalog
+  build's one shared scale factor: no item is ever written past it (base bodies
+  take the same factor toward their own `--body-height` target, so a body may be
+  taller).
 - **Touch targets ≥ 56dp.** Tray items are 96dp.
 - `buildToolsVersion = "36.1.0"` is pinned because build-tools 34.0.0 was
   corrupted in the original *Windows* SDK install. It is a workaround, not a

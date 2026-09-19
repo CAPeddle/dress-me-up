@@ -1,3 +1,13 @@
+# What is in this directory
+
+`catalog.json`, `items/`, `bodies.json` and `bodies/` are **generated** by the
+pipeline (`tools/build_catalog.py`) and are not tracked, so a fresh clone has
+none of them until the pipeline has run. Every content build rewrites them at
+that build's shared scale.
+
+`characters.json` and `characters/` are hand-authored and tracked. They are what
+the rest of this file is about.
+
 # Authoring `characters.json`
 
 The catalog is generated. **This file is not** — snap points have to be placed by

@@ -4,25 +4,13 @@ import pytest
 from PIL import Image
 
 from dressup_pipeline.bodies import BodyError
-from dressup_pipeline.catalog import build_catalog, downsample, new_build_id
+from dressup_pipeline.catalog import build_catalog, new_build_id
 from dressup_pipeline.triage import TRIAGE_DPI, Manifest, PageVerdict, manifest_path
 from conftest import make_doll_page, make_item_image
 
 
 ACCEPTED = dict(category="hat", group="fantasy", quality=0.95, accepted=True)
 AT_72 = dict(ACCEPTED, dpi=72)
-
-
-def test_downsample_fits_the_box_and_preserves_aspect():
-    result = downsample(Image.new("RGBA", (2000, 1000)), max_px=512)
-
-    assert result.size == (512, 256)
-
-
-def test_downsample_never_upscales():
-    result = downsample(Image.new("RGBA", (100, 80)), max_px=512)
-
-    assert result.size == (100, 80)
 
 
 def test_writes_accepted_items_and_their_images(tmp_path, sidecar_corpus):
@@ -94,10 +82,11 @@ def test_missing_image_is_skipped_rather_than_crashing_the_build(tmp_path, sidec
     assert summary.skipped["image missing on disk"] == 1
 
 
-def test_catalog_records_the_post_downsample_dimensions(tmp_path, sidecar_corpus):
+def test_catalog_records_the_dimensions_after_the_build_factor(tmp_path, sidecar_corpus):
+    """With no bodies the Item ceiling is the only bound: 512/1200 for both edges."""
     root, _ = sidecar_corpus([{"item_id": "big", **ACCEPTED, "size": (1200, 800)}])
 
-    build_catalog(root, tmp_path / "assets", min_quality=0.90, max_px=512)
+    build_catalog(root, tmp_path / "assets", min_quality=0.90)
 
     item = json.loads((tmp_path / "assets" / "catalog.json").read_text())["items"][0]
     assert (item["width"], item["height"]) == (512, 341)
@@ -161,7 +150,7 @@ def test_catalog_without_a_body_list_gains_only_a_build_id(tmp_path, sidecar_cor
     build_catalog(root, tmp_path / "assets", min_quality=0.90)
 
     catalog = json.loads((tmp_path / "assets" / "catalog.json").read_text())
-    assert set(catalog) == {"version", "min_quality", "items", "build_id"}
+    assert set(catalog) == {"version", "min_quality", "items", "build_id", "scale"}
     assert not (tmp_path / "assets" / "bodies.json").exists()
 
 
@@ -180,7 +169,9 @@ def test_bodies_are_written_beside_the_catalog_in_list_order(tmp_path, sidecar_c
     assert "bodies: 2" in summary.as_report()
     assert bodies["version"] == 1
     assert bodies["build_id"] == catalog["build_id"]
+    assert bodies["scale"] == catalog["scale"]
     assert [b["id"] for b in bodies["bodies"]] == ["fantasy-book-p01", "fantasy-book-p00"]
+    assert set(bodies) == {"version", "build_id", "scale", "bodies"}
     assert set(bodies["bodies"][0]) == {"id", "image", "width", "height", "source_pdf", "group"}
     assert bodies["bodies"][1]["image"] == "bodies/fantasy-book-p00.png"
     assert bodies["bodies"][1]["source_pdf"] == "book.pdf"
@@ -204,6 +195,8 @@ def test_catalog_keeps_every_prior_key_when_bodies_are_built(tmp_path, sidecar_c
         bodies_list=body_book["write_list"](TWO_BODIES), source_root=body_book["source"], triage_dir=body_book["triage"],
     )
 
+    # The scale blocks compare equal only because both builds clamp to a factor
+    # of one: nothing here is near the Item ceiling or the body-height target.
     before = json.loads((plain_assets / "catalog.json").read_text())
     after = json.loads((with_bodies / "catalog.json").read_text())
     assert {k: v for k, v in before.items() if k != "build_id"} == {k: v for k, v in after.items() if k != "build_id"}
