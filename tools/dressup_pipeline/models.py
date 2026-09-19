@@ -79,6 +79,10 @@ class Sidecar:
     # dimensions and silently mis-slot every item.
     page_width: int = 0
     page_height: int = 0
+    # Render DPI the extractor ran at, so later stages can check that every
+    # image in a build shares one physical scale. 0 means "not recorded" —
+    # sidecars written before this field existed still load.
+    dpi: int = 0
     category: str | None = None
     group: str | None = None
     quality: float | None = None
@@ -96,6 +100,8 @@ class Sidecar:
             raise SidecarError(f"{self.item_id}: quality {self.quality} outside 0..1")
         if self.page_width < 0 or self.page_height < 0:
             raise SidecarError(f"{self.item_id}: negative page dimensions")
+        if self.dpi < 0:
+            raise SidecarError(f"{self.item_id}: negative dpi {self.dpi}")
 
     @property
     def is_classified(self) -> bool:

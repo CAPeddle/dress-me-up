@@ -90,6 +90,16 @@ and place the points.
 
 ## Status of the two triage modules (2026-08-25)
 
+> **2026-09-19.** The stage now exists as `tools/triage_pages.py`. It writes one
+> manifest per PDF to `content/triage/<stem>.json` (rotation, verdict,
+> confidence per page, plus a `confirmed` slot) and a contact sheet per verdict.
+> Confirmations go in a hand-written `content/triage/<stem>.overrides.json` —
+> `{"pages": {"3": "item_sheet"}}`, 0-indexed — and are merged into the manifest
+> on every run, so re-triaging never loses them; a confirmation always wins over
+> the verdict. `tools/extract_pdf.py --triage` follows the manifest: it rotates
+> each page and cuts only confirmed item sheets or unconfirmed pages the
+> classifier accepted, which is the item-sheet-only mode described below.
+
 Both were built against the survey and then checked by agents who did not write
 them, adjudicating every disagreement by looking at the page.
 

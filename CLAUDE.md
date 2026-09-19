@@ -50,7 +50,8 @@ Pipeline:
 cd tools && .venv/bin/python -m pytest        # 48 tests
 
 tools/.venv/bin/python tools/make_smoke_pdf.py            # synthetic stand-in for a scan
-tools/.venv/bin/python tools/extract_pdf.py content/pdfs/*.pdf
+tools/.venv/bin/python tools/triage_pages.py content/pdfs/*.pdf   # manifests + contact sheets -> content/triage/
+tools/.venv/bin/python tools/extract_pdf.py content/pdfs/*.pdf --triage   # rotate + cut only item sheets
 tools/.venv/bin/python tools/classify_and_qa.py --min-quality 0.90
 tools/.venv/bin/python tools/build_catalog.py --min-quality 0.90 --group fantasy
 ```

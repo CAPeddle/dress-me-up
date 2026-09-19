@@ -10,13 +10,16 @@ can reason about from its output alone.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 from PIL import Image
 from scipy import ndimage
 
 from .models import BBox, Sidecar, SIDECAR_SUFFIX
+
+if TYPE_CHECKING:
+    from .triage import Manifest
 
 # A blob smaller than this fraction of the page is scanner noise or a stray mark.
 DEFAULT_MIN_AREA_FRAC = 0.002
@@ -129,9 +132,20 @@ def extract_pdf(
     min_area_frac: float = DEFAULT_MIN_AREA_FRAC,
     paper_threshold: int = DEFAULT_PAPER_THRESHOLD,
     segmenter: Segmenter | None = None,
+    manifest: Manifest | None = None,
 ) -> list[Sidecar]:
-    """Extract every page of one PDF into cutouts + unclassified sidecars."""
+    """Extract every page of one PDF into cutouts + unclassified sidecars.
+
+    With a triage `manifest`, each page is first turned upright as the manifest
+    says and only pages it calls item sheets are cut; the sidecar then records
+    the rotated page size, since that is the page the bbox lives on. Without one,
+    every page is cut as scanned.
+    """
     import pymupdf
+
+    # Imported here rather than at the top: triage depends on this module for
+    # render_page, and the extractor only needs rotate_page when handed a manifest.
+    from .triage import rotate_page
 
     segmenter = segmenter or ThresholdSegmenter(min_area_frac, paper_threshold)
 
@@ -143,7 +157,11 @@ def extract_pdf(
     sidecars: list[Sidecar] = []
 
     for page_no in range(page_count):
+        if manifest is not None and not manifest.is_item_sheet(page_no):
+            continue
         page = render_page(pdf_path, page_no, dpi=dpi)
+        if manifest is not None:
+            page = rotate_page(page, manifest.rotation(page_no))
         for index, box in enumerate(segmenter.regions(page)):
             item_id = f"{stem}-p{page_no:03d}-i{index:03d}"
             image_name = f"{item_id}.png"
@@ -158,6 +176,7 @@ def extract_pdf(
                 image=image_name,
                 page_width=page.width,
                 page_height=page.height,
+                dpi=dpi,
             )
             sidecar.write(out_dir / f"{item_id}{SIDECAR_SUFFIX}")
             sidecars.append(sidecar)
