@@ -7,7 +7,7 @@ import build_catalog as build_catalog_cli
 from dressup_pipeline.bodies import BodyError
 from dressup_pipeline.catalog import BodiesSource, build_catalog, new_build_id
 from dressup_pipeline.triage import TRIAGE_DPI, Manifest, PageVerdict, manifest_path
-from conftest import make_doll_page, make_item_image
+from conftest import make_doll_page
 
 
 ACCEPTED = dict(category="hat", group="fantasy", quality=0.95, accepted=True)
