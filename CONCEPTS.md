@@ -26,7 +26,7 @@ off.
 *Also heard as:* mannequin — the family's word for it; the same thing.
 
 ### Item Sheet
-A page of loose cut-outs — garments, headwear, weapons, mounts — intended to be
+A page of loose cut-outs — garments, headwear, weapons, Companions — intended to be
 separated and applied to a Base Body. The only Page Type the extractor opens.
 
 ### Illustration Plate
@@ -68,6 +68,21 @@ The kind of slot an Item occupies — headwear, footwear, a weapon, and so on. C
 is the matching key between the two halves of the system: an Item declares the
 Category it is, a Snap Point declares the Category it accepts, and an Item can only
 lock onto a Snap Point that names its own Category.
+
+### Companion
+A creature Item — a bird, a squirrel, a teddy, a jellyfish — placed on a character
+rather than worn by it. Distinct from a mount, which is ridden: the books scanned so
+far contain only Companions, and `mount` is held for a rideable a Dragon book may yet
+supply.
+
+### Correction
+A human verdict about one Item that supersedes what the classifier guessed: the
+Category it actually belongs to, or a rejection saying the cut-out is unusable or is
+not dress-up material at all. Corrections are the Catalog's only source of Category —
+the classifier's output is a suggestion that orders the review and nothing more. A
+Correction names its Item by the same geometry a re-extraction uses to recognise it,
+not by the Item's positional id, so re-cutting a page cannot silently reattach a
+label to the wrong cut-out.
 
 ### Snap Point
 A position on a Base Body where an Item of a stated Category belongs, expressed
