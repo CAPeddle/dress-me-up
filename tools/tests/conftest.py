@@ -6,7 +6,7 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from dressup_pipeline.corrections import Correction, corrections_path, write_corrections
+from dressup_pipeline.corrections import Correction, corrections_path, pdf_stem, write_corrections
 from dressup_pipeline.extract import DEFAULT_DPI
 from dressup_pipeline.models import BBox, Sidecar, SIDECAR_SUFFIX
 from synthetic import make_item_image
@@ -86,7 +86,7 @@ def sidecar_corpus(tmp_path):
                 )
                 filed.setdefault(sidecar.source_pdf, []).append(correction)
         for source_pdf, corrections in filed.items():
-            write_corrections(corrections_path(corrections_dir, source_pdf), corrections)
+            write_corrections(corrections_path(corrections_dir, pdf_stem(source_pdf)), corrections)
         return root, built
 
     return _build

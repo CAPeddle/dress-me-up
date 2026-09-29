@@ -11,9 +11,13 @@ address with every wildcard spelling refused, one content policy on every
 response, no access log and no client address in any error (R16). It diverges on
 two points. `--host` defaults to loopback instead of being required, because that
 file serves the tablet across the home network and the address has to be a
-decision, while this tool is a person at this desk. And POST is answered rather
-than refused, which is why this is a separate module (KTD5) — `web/serve.py`'s
-promise is that a request body is never read, and it keeps it.
+decision, while this tool is a person at this desk — and a non-loopback address
+is refused outright, so the promise the rest of this docstring makes is the one
+the socket keeps. And POST is answered rather than refused, which is why this is
+a separate module (KTD5) — `web/serve.py`'s promise is that a request body is
+never read, and it keeps it. Loopback is not a boundary against the browser
+already running here, so every request must be addressed to a name for this
+machine and the one write must be JSON.
 
 The port is its own, not `SHARED_PORT`: 8777 is shared between the web version and
 the playtest collector precisely so they cannot co-run, and this tool has to be
@@ -50,6 +54,7 @@ from dressup_pipeline.corrections import (
     CorrectionError,
     CorrectionKey,
     corrections_path,
+    pdf_stem,
     read_corrections,
     sidecar_key,
     write_corrections,
@@ -81,6 +86,10 @@ CONTENT_TYPES = {
     ".svg": "image/svg+xml",
     ".ico": "image/x-icon",
 }
+
+# The names this machine answers to. The bound address is added per request, so
+# `--host ::1` is served under the spelling it was started with.
+OWN_HOST_NAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 
 CORPUS_ROUTE = "/api/corpus"
 CORRECTIONS_ROUTE = "/api/corrections"
@@ -127,7 +136,7 @@ class CorpusItem:
 
     @property
     def stem(self) -> str:
-        return Path(self.sidecar.source_pdf).stem
+        return pdf_stem(self.sidecar.source_pdf)
 
 
 # ---------------------------------------------------------------- the corpus
@@ -195,6 +204,19 @@ def resolve_client_path(url_path: str, client_dir: Path) -> Path | None:
     if candidate.suffix.lower() not in CONTENT_TYPES:
         return None
     return contained(candidate, client_dir)
+
+
+def request_hostname(raw: str) -> str | None:
+    """The name a request asked for, with its port and any brackets taken off.
+
+    Parsed as an authority rather than split on a colon: `[::1]:8778` and `[::1]`
+    both name the loopback this tool binds, and splitting on the colon turns
+    either into something no list of names can match.
+    """
+    try:
+        return urlsplit(f"//{raw}").hostname
+    except ValueError:
+        return None
 
 
 def item_id_from(url_path: str, prefix: str) -> str:
@@ -611,6 +633,27 @@ class CorrectHandler(BaseHTTPRequestHandler):
         body = self._read_body()
         if body is None:
             return
+        # Checked after the body is bounded and before a byte of it is believed,
+        # so the length refusals above keep answering as themselves.
+        #
+        # The browser writes this header, so a cross-site request cannot spell it
+        # as the wall's: it carries the other page's origin, or `null`, and both
+        # land in the refusal. Absent is accepted because a browser never leaves it
+        # off a cross-site POST — a request without one is curl at this desk, not
+        # the thing this check exists for. The wall's own POSTs do carry it, from
+        # `fetch` and from `sendBeacon` alike.
+        origin = self.headers.get("Origin")
+        if origin is not None and origin != f"http://{self.headers.get('Host', '')}":
+            self._refuse_json(HTTPStatus.BAD_REQUEST, "filings come from this tool's own page")
+            return
+        # Requiring JSON is what forces a cross-site write into a preflight: the
+        # three types a form can post need no permission to leave the page they
+        # are on, and `do_OPTIONS` answers 405, so the preflight this earns never
+        # clears. Both of the wall's write paths already send it — `fetch`'s
+        # header and the `sendBeacon` Blob's type.
+        if not self.headers.get("Content-Type", "").lower().startswith("application/json"):
+            self._refuse_json(HTTPStatus.BAD_REQUEST, "a batch of filings is application/json")
+            return
         try:
             payload = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -638,6 +681,26 @@ class CorrectHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         self._guard(self._handle_post)
 
+    def _asked_for_this_machine(self) -> bool:
+        """Whether the request was addressed to this tool, by a name for this machine.
+
+        Binding to loopback keeps other machines out and nothing else: a page the
+        person has open in another tab runs *here*, so its requests arrive on
+        loopback exactly like the wall's. A name that resolves to 127.0.0.1 turns
+        any site they merely visited into a client of this port (DNS rebinding),
+        and the browser sends that name in `Host` — which is the one part of such
+        a request that cannot be spelled as the wall's.
+
+        A missing `Host` is refused with the rest. HTTP/1.1 requires one and every
+        browser sends one, so a request without it is not the wall either.
+        """
+        raw = self.headers.get("Host", "")
+        name = request_hostname(raw) if raw else None
+        if name is None:
+            return False
+        bound = str(self.server.server_address[0]).partition("%")[0].lower()
+        return name in OWN_HOST_NAMES or name == bound
+
     def _guard(self, work) -> None:
         """Answer, and let nothing a client sends take the server down or print.
 
@@ -647,9 +710,19 @@ class CorrectHandler(BaseHTTPRequestHandler):
         Also where the per-response policy is reset: one handler instance serves
         every request on a keep-alive connection, so a thumbnail's day-long cache
         would otherwise be inherited by whatever was asked for next.
+
+        And where the request is checked to have been addressed here at all, ahead
+        of every route rather than only the write: a rebound *read* of the corpus
+        is how a page would learn which item ids to file against.
         """
         self.cache_control = "no-cache"
         try:
+            if not self._asked_for_this_machine():
+                # Nothing below reads the body, so the connection closes behind
+                # the refusal: unread bytes in the socket desync the next request.
+                self.close_connection = True
+                self._refuse(HTTPStatus.BAD_REQUEST, "not a name this tool answers to")
+                return
             work()
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -720,6 +793,18 @@ def is_wildcard_bind(address: str) -> bool:
     """True when a bound address is INADDR_ANY / in6addr_any, however it was spelled."""
     try:
         return ipaddress.ip_address(address.partition("%")[0]).is_unspecified
+    except ValueError:
+        return False
+
+
+def is_loopback_bind(address: str) -> bool:
+    """True when a bound address can only be reached from this machine.
+
+    The scope is split off first: a link-local address arrives from the kernel as
+    `fe80::1%eth0`, which is not an address `ipaddress` will parse.
+    """
+    try:
+        return ipaddress.ip_address(address.partition("%")[0]).is_loopback
     except ValueError:
         return False
 
@@ -806,6 +891,18 @@ def main(argv: list[str] | None = None) -> int:
         server.server_close()
         print(
             f"refusing to start: --host {host!r} resolves to the wildcard address {bound_host}.",
+            file=sys.stderr,
+        )
+        print("This tool is for this machine; leave --host off for loopback.", file=sys.stderr)
+        return 2
+    if not is_loopback_bind(bound_host):
+        # Checked after the wildcard, so a wildcard still reports itself as one.
+        # An address on the home network passes that check and is not this machine:
+        # it would put the write endpoint — which no device but this one has any
+        # business reaching — on every tablet and phone in the house.
+        server.server_close()
+        print(
+            f"refusing to start: {bound_host} is not a loopback address.",
             file=sys.stderr,
         )
         print("This tool is for this machine; leave --host off for loopback.", file=sys.stderr)

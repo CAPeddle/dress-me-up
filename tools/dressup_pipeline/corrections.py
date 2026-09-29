@@ -70,7 +70,7 @@ class Correction:
     names why it is not an item at all — exactly one of the two.
     """
 
-    source_pdf: str  # the PDF's stem, never a path: `Path(sidecar.source_pdf).stem`
+    source_pdf: str  # the PDF's stem, never a path: `pdf_stem(sidecar.source_pdf)`
     page: int
     bbox: BBox
     page_width: int
@@ -129,9 +129,6 @@ class Correction:
             self.dpi,
         )
 
-    def matches(self, sidecar: Sidecar) -> bool:
-        return self.key == sidecar_key(sidecar)
-
     # -- the verdict ------------------------------------------------------
 
     @property
@@ -160,7 +157,7 @@ class Correction:
         record that writes happily and refuses to read back.
         """
         correction = cls(
-            source_pdf=Path(sidecar.source_pdf).stem,
+            source_pdf=pdf_stem(sidecar.source_pdf),
             page=sidecar.page,
             bbox=BBox(*sidecar.bbox.as_tuple()),
             page_width=sidecar.page_width,
@@ -209,13 +206,13 @@ class MatchReport:
 def sidecar_key(sidecar: Sidecar) -> CorrectionKey:
     """The identity a correction is matched on, taken off a sidecar.
 
-    `source_pdf` holds a bare filename, so the stem comes off it with `Path`
+    `source_pdf` holds a bare filename, so the stem comes off it with `pdf_stem`
     rather than by splitting the item id — stems contain hyphens
     ("fantasy-smoke") and the id's own separator is a hyphen too.
     """
     box = sidecar.bbox
     return (
-        Path(sidecar.source_pdf).stem,
+        pdf_stem(sidecar.source_pdf),
         sidecar.page,
         *box.as_tuple(),
         sidecar.page_width,
@@ -224,19 +221,25 @@ def sidecar_key(sidecar: Sidecar) -> CorrectionKey:
     )
 
 
-def corrections_path(corrections_dir: Path, pdf: Path | str) -> Path:
-    """Where one PDF's corrections live. `pdf` may be a path, a filename or a stem.
+def pdf_stem(source_pdf: Path | str) -> str:
+    """The stem a correction is filed under, taken off a scan's filename.
 
-    Only a real `.pdf` suffix comes off, so passing a stem back in returns the
-    same path. `Path.stem` would strip at the last dot whatever it found, and a
-    stem may hold dots — scanners name files by timestamp, and
-    `2026-09-28 14.08.32.pdf` is an ordinary one. Both callers already hold a
-    stem, so stripping again would write that book's labelling to
-    `2026-09-28 14.08.corrections.json`, which the loader then refuses record by
-    record for naming another PDF.
+    Only a real `.pdf` suffix comes off. `Path.stem` would strip at the last dot
+    whatever it found, and these stems hold dots: scanners name files by
+    timestamp and `2026-09-28 14.08.32.pdf` is an ordinary one, which `Path.stem`
+    turns into `2026-09-28 14.08`.
     """
-    name = Path(pdf).name
-    stem = name[:-4] if name.lower().endswith(".pdf") else name
+    name = Path(source_pdf).name
+    return name[:-4] if name.lower().endswith(".pdf") else name
+
+
+def corrections_path(corrections_dir: Path, stem: str) -> Path:
+    """Where one PDF's corrections live. `stem` is a stem, never a filename.
+
+    Deriving it here too would mean guessing which of the two this caller meant,
+    and a name ending `.pdf.pdf` makes that guess wrong. The stem is taken off
+    the filename once, by `pdf_stem`, where the identity is built.
+    """
     return corrections_dir / f"{stem}{CORRECTIONS_SUFFIX}"
 
 
@@ -303,8 +306,11 @@ def write_corrections(path: Path, corrections: Iterable[Correction]) -> None:
     records = sorted(corrections, key=lambda correction: correction.key)
     payload = {"corrections": [correction.to_dict() for correction in records]}
     temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    temp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     try:
+        # The write is inside too, not just the move: a full disk leaves a part of
+        # a record here, and one of those per attempt piles up beside the file it
+        # was meant to become until nobody can tell which is the labelling.
+        temp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         os.replace(temp, path)
     except OSError:
         temp.unlink(missing_ok=True)
@@ -329,19 +335,6 @@ def load_corrections(corrections_dir: Path) -> dict[CorrectionKey, Correction]:
     for path in sorted(corrections_dir.glob(f"*{CORRECTIONS_SUFFIX}")):
         corrections.update(read_corrections(path))
     return corrections
-
-
-def effective_category(
-    corrections: Mapping[CorrectionKey, Correction], sidecar: Sidecar
-) -> str | None:
-    """The slot the build should file this item under, or None if it has no label.
-
-    None covers both "nobody has ruled on it" and "somebody rejected it": neither
-    belongs in the catalogue. A caller that needs to tell them apart — a progress
-    count, a repair queue — uses `match`.
-    """
-    correction = corrections.get(sidecar_key(sidecar))
-    return None if correction is None else correction.effective_category
 
 
 def match(

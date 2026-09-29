@@ -252,7 +252,7 @@ def test_a_corrections_directory_that_does_not_exist_is_an_empty_queue(tmp_path,
 def test_a_malformed_correction_file_exits_non_zero_and_names_the_file(tmp_path, sidecar_corpus, capsys):
     """Half an hour of labelling with a typo in it is to be fixed, not worked around."""
     root, _ = sidecar_corpus([{"item_id": "a", "correction": "hat", **DONE}])
-    broken = corrections_path(tmp_path / "corrections", "hand-edited.pdf")
+    broken = corrections_path(tmp_path / "corrections", "hand-edited")
     broken.write_text('{"corrections": [', encoding="utf-8")
 
     code, out, err = _run(tmp_path, root, capsys)
@@ -267,7 +267,7 @@ def test_a_malformed_correction_file_exits_non_zero_and_names_the_file(tmp_path,
 def test_a_record_naming_another_pdf_exits_non_zero_and_names_the_file(tmp_path, sidecar_corpus, capsys):
     """A record pasted into the wrong PDF's file would label a different scan's page."""
     root, built = sidecar_corpus([{"item_id": "a", "rejection": "multi_item", **DONE}])
-    stray = corrections_path(tmp_path / "corrections", "somebody-elses-book.pdf")
+    stray = corrections_path(tmp_path / "corrections", "somebody-elses-book")
     stray.write_text(
         json.dumps({"corrections": [{
             "source_pdf": "fantasy-book-1",

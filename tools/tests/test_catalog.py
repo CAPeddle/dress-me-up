@@ -9,6 +9,7 @@ from dressup_pipeline.catalog import BodiesSource, build_catalog, new_build_id
 from dressup_pipeline.corrections import (
     Correction,
     corrections_path,
+    pdf_stem,
     read_corrections,
     write_corrections,
 )
@@ -132,7 +133,7 @@ def test_a_correction_matching_no_item_is_reported_rather_than_failing_the_build
     # filed beside the label that still matches.
     moved = Correction.for_sidecar(built["a"], category="top")
     moved.bbox = BBox(moved.bbox.x + 1, moved.bbox.y, moved.bbox.w, moved.bbox.h)
-    same_pdf = corrections_path(corrections_dir, built["a"].source_pdf)
+    same_pdf = corrections_path(corrections_dir, pdf_stem(built["a"].source_pdf))
     write_corrections(same_pdf, [*read_corrections(same_pdf).values(), moved])
 
     summary = build_catalog(root, tmp_path / "assets", corrections_dir=corrections_dir)

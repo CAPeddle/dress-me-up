@@ -22,7 +22,7 @@ from dressup_pipeline.corrections import (
     Correction,
     CorrectionError,
     corrections_path,
-    effective_category,
+    pdf_stem,
     match,
     read_corrections,
     sidecar_key,
@@ -128,7 +128,7 @@ def test_written_records_are_key_sorted_so_a_rewrite_is_a_clean_diff(tmp_path):
 
 def test_corrections_path_is_one_file_per_pdf_stem(tmp_path):
     """A stem may hold hyphens, so it is never parsed back out of anything."""
-    assert corrections_path(tmp_path, "fantasy-smoke.pdf").name == f"fantasy-smoke{CORRECTIONS_SUFFIX}"
+    assert corrections_path(tmp_path, "fantasy-smoke").name == f"fantasy-smoke{CORRECTIONS_SUFFIX}"
     assert corrections_path(tmp_path, "20260509081050").name == f"20260509081050{CORRECTIONS_SUFFIX}"
 
 
@@ -138,7 +138,6 @@ def test_corrections_path_is_one_file_per_pdf_stem(tmp_path):
 def test_matches_a_sidecar_with_identical_geometry():
     correction = _correction(category="bottom")
 
-    assert correction.matches(_sidecar())
     assert correction.key == sidecar_key(_sidecar())
 
 
@@ -150,13 +149,13 @@ def test_for_sidecar_takes_the_stem_and_the_geometry_off_the_sidecar():
     correction = Correction.for_sidecar(sidecar, category="bottom")
 
     assert correction.source_pdf == "20260509081050"
-    assert correction.matches(sidecar)
+    assert correction.key == sidecar_key(sidecar)
     assert correction.effective_category == "bottom"
 
     rejected = Correction.for_sidecar(sidecar, rejection="bad_crop")
 
     assert rejected.rejected
-    assert rejected.matches(sidecar)
+    assert rejected.key == sidecar_key(sidecar)
 
 
 def test_two_pdfs_sharing_geometry_resolve_to_different_corrections():
@@ -178,8 +177,8 @@ def test_two_pdfs_sharing_geometry_resolve_to_different_corrections():
     first = _sidecar(source_pdf="20260509081050.pdf")
     second = _sidecar(item_id="20260509081623-p000-i001", source_pdf="20260509081623.pdf")
 
-    assert effective_category(corrections, first) == "hat"
-    assert effective_category(corrections, second) == "shoes"
+    assert corrections[sidecar_key(first)].category == "hat"
+    assert corrections[sidecar_key(second)].category == "shoes"
 
 
 def test_a_bbox_off_by_one_pixel_does_not_match_and_is_reported_unmatched():
@@ -193,7 +192,7 @@ def test_a_bbox_off_by_one_pixel_does_not_match_and_is_reported_unmatched():
         _sidecar(item_id="20260509081050-p000-i002", bbox=(400, 900, 200, 300)),
     ]
 
-    assert not moved.matches(sidecars[0])
+    assert moved.key != sidecar_key(sidecars[0])
 
     report = match(corrections, sidecars)
 
@@ -206,11 +205,11 @@ def test_a_different_page_size_does_not_match_even_with_the_same_bbox():
     """A re-rendered page puts every item somewhere else relative to the page."""
     correction = _correction(page_size=(2480, 3507))
 
-    assert not correction.matches(_sidecar(page_size=(2481, 3507)))
+    assert correction.key != sidecar_key(_sidecar(page_size=(2481, 3507)))
 
 
 def test_a_different_dpi_does_not_match():
-    assert not _correction(dpi=300).matches(_sidecar(dpi=200))
+    assert _correction(dpi=300).key != sidecar_key(_sidecar(dpi=200))
 
 
 def test_a_rejected_correction_reports_itself_and_yields_no_category():
@@ -220,7 +219,6 @@ def test_a_rejected_correction_reports_itself_and_yields_no_category():
 
     assert rejected.rejected
     assert rejected.effective_category is None
-    assert effective_category(corrections, sidecar) is None
 
     report = match(corrections, [sidecar])
 
@@ -235,10 +233,6 @@ def test_a_welded_pair_kept_as_one_is_an_ordinary_category_correction():
 
     assert not kept.rejected
     assert kept.effective_category == "dress"
-
-
-def test_an_unknown_item_has_no_human_label():
-    assert effective_category({}, _sidecar()) is None
 
 
 # -- refusals ------------------------------------------------------------------
@@ -388,7 +382,7 @@ def test_re_running_classify_leaves_the_correction_file_byte_identical(tmp_path)
     assert path.read_bytes() == before
 
     corrections = read_corrections(path)
-    assert effective_category(corrections, Sidecar.read(sidecar_path)) == "bottom"
+    assert corrections[sidecar_key(Sidecar.read(sidecar_path))].category == "bottom"
 
 
 def test_a_failed_write_leaves_the_previous_labelling_intact(tmp_path, monkeypatch):
@@ -398,7 +392,7 @@ def test_a_failed_write_leaves_the_previous_labelling_intact(tmp_path, monkeypat
     reason these files are tracked at all — so a write that dies partway must
     leave the last good version where it was rather than a half-file.
     """
-    path = corrections_path(tmp_path, "set.pdf")
+    path = corrections_path(tmp_path, "set")
     write_corrections(path, [_correction(source_pdf="set", category="hat")])
     before = path.read_bytes()
 
@@ -413,17 +407,45 @@ def test_a_failed_write_leaves_the_previous_labelling_intact(tmp_path, monkeypat
     assert list(tmp_path.glob("*.tmp")) == []
 
 
-def test_corrections_path_is_idempotent_on_a_dotted_stem(tmp_path):
+def test_a_failed_temp_write_leaves_nothing_behind_either(tmp_path, monkeypatch):
+    """The other half of the same guarantee: a full disk fails mid-write.
+
+    The tracked file surviving is the whole point of writing beside it, and that
+    part already held. What did not is the temp file: one accumulates per attempt,
+    beside the only durable copy of half an hour of judgement, until somebody has
+    to work out which of those files is the labelling.
+    """
+    path = corrections_path(tmp_path, "set")
+    write_corrections(path, [_correction(source_pdf="set", category="hat")])
+    before = path.read_bytes()
+
+    def fills_the_disk(self, *args, **kwargs):
+        # Partial, the way ENOSPC leaves it: the file exists and is not a record.
+        self.write_bytes(b'{\n  "corrections": [\n    {\n      "source')
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(Path, "write_text", fills_the_disk)
+    with pytest.raises(OSError):
+        write_corrections(path, [_correction(source_pdf="set", category="top")])
+
+    assert path.read_bytes() == before
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_a_stem_is_taken_off_a_scanners_filename_exactly_once(tmp_path):
     """The path is built from a stem as readily as from a filename.
 
-    Both production callers already hold a stem, and a stem may contain dots:
-    scanners name files by timestamp and `2026-09-28 14.08.32.pdf` is an
-    ordinary one. Stripping at the last dot regardless would route the filing to
-    a file whose name disagrees with the records inside it.
+    A stem may contain dots: scanners name files by timestamp and
+    `2026-09-28 14.08.32.pdf` is an ordinary one. Stripping at the last dot
+    regardless would route the filing to a file whose name disagrees with the
+    records inside it. A name ending `.pdf.pdf` is the case that shows why the
+    stem is taken once here rather than guessed at again further down.
     """
-    assert corrections_path(tmp_path, "album.2.pdf").name == f"album.2{CORRECTIONS_SUFFIX}"
-    assert corrections_path(tmp_path, "album.2").name == f"album.2{CORRECTIONS_SUFFIX}"
-    assert corrections_path(tmp_path, Path("/scans/album.2.pdf")).name == f"album.2{CORRECTIONS_SUFFIX}"
+    assert pdf_stem("album.2.pdf") == "album.2"
+    assert pdf_stem(Path("/scans/album.2.pdf")) == "album.2"
+    assert pdf_stem("2026-09-28 14.08.32.pdf") == "2026-09-28 14.08.32"
+    assert pdf_stem("report.pdf.pdf") == "report.pdf"
+    assert corrections_path(tmp_path, pdf_stem("album.2.pdf")).name == f"album.2{CORRECTIONS_SUFFIX}"
 
 
 def test_a_filing_on_a_dotted_stem_reads_back(tmp_path):

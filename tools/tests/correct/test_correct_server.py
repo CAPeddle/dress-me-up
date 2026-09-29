@@ -309,6 +309,110 @@ def test_unused_methods_are_refused(running, method):
     assert headers["Allow"] == "GET, HEAD, POST"
 
 
+# ------------------------------------------------- refusing another page's request
+
+FILING = {"filings": [{"item_id": "scan-a-p000-i000", "category": "hat"}]}
+
+
+def post_raw(running, headers, payload=FILING, path="/api/corrections"):
+    """A POST with headers spelled by hand, so a browser's can be imitated."""
+    return running.request("POST", path, body=json.dumps(payload).encode("utf-8"), headers=headers)
+
+
+def test_a_post_naming_another_host_is_refused(running, corpus):
+    """DNS rebinding: a name the browser already trusts, pointed at this machine.
+
+    The packet arrives on loopback either way, so the socket cannot tell that
+    request from the wall's — the name the browser asked for is the only thing
+    that can.
+    """
+    status, _, _ = post_raw(running, {"Host": "attacker.tld", "Content-Type": "application/json"})
+
+    assert status == 400
+    assert not corpus.corrections_file("scan-a").exists()
+
+
+def test_a_read_naming_another_host_is_refused_too(running):
+    # The guard is on every route, not on the write: a rebound read of the corpus
+    # is how an attacker learns which item ids to file against.
+    status, _, _ = running.request("GET", "/api/corpus", headers={"Host": "attacker.tld"})
+
+    assert status == 400
+
+
+def test_a_post_with_no_host_at_all_is_refused(running, corpus):
+    """HTTP/1.1 requires a Host and every browser sends one, so its absence is
+    not the wall; an unnamed request is one the rebinding guard cannot clear."""
+    conn = http.client.HTTPConnection(running.host, running.port, timeout=5)
+    try:
+        body = json.dumps(FILING).encode("utf-8")
+        conn.putrequest("POST", "/api/corrections", skip_host=True, skip_accept_encoding=True)
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", str(len(body)))
+        conn.endheaders(body)
+        status = conn.getresponse().status
+    finally:
+        conn.close()
+
+    assert status == 400
+    assert not corpus.corrections_file("scan-a").exists()
+
+
+def test_a_post_from_another_page_s_origin_is_refused(running, corpus):
+    # A page in another tab can reach this port; what it cannot do is claim to be
+    # this one.
+    status, _, _ = post_raw(running, {
+        "Content-Type": "application/json",
+        "Origin": "http://attacker.tld",
+    })
+
+    assert status == 400
+    assert not corpus.corrections_file("scan-a").exists()
+
+
+@pytest.mark.parametrize("content_type", ["text/plain", "application/x-www-form-urlencoded", None])
+def test_a_post_that_is_not_json_is_refused(running, corpus, content_type):
+    """The content type is what forces a cross-site write into a preflight.
+
+    A form post carries one of the safelisted types and needs no permission to
+    leave the other page; OPTIONS is answered 405, so a preflight never clears.
+    """
+    status, _, _ = post_raw(running, {} if content_type is None else {"Content-Type": content_type})
+
+    assert status == 400
+    assert not corpus.corrections_file("scan-a").exists()
+
+
+@pytest.mark.parametrize("origin", [None, "own"])
+def test_the_wall_s_own_filing_still_lands(running, corpus, origin):
+    """Both of the client's write paths, as the browser spells them.
+
+    `sendBeacon` posts a Blob typed `application/json` and `fetch` sets the
+    header; a same-origin POST carries an Origin either way, so the guard has to
+    let its own through.
+    """
+    headers = {"Host": f"{running.host}:{running.port}", "Content-Type": "application/json"}
+    if origin == "own":
+        headers["Origin"] = f"http://{running.host}:{running.port}"
+
+    status, _, _ = post_raw(running, headers)
+
+    assert status == 200
+    assert len(read_corrections(corpus.corrections_file("scan-a"))) == 1
+
+
+def test_localhost_is_the_same_machine_as_the_address_it_bound(running, corpus):
+    # The person may open either spelling, and neither is a rebinding.
+    status, _, _ = post_raw(running, {
+        "Host": f"localhost:{running.port}",
+        "Content-Type": "application/json",
+        "Origin": f"http://localhost:{running.port}",
+    })
+
+    assert status == 200
+    assert len(read_corrections(corpus.corrections_file("scan-a"))) == 1
+
+
 # ------------------------------------------------------------ the manifest
 
 def test_the_manifest_describes_the_whole_corpus(running, corpus):
@@ -624,8 +728,85 @@ def test_wildcard_host_is_refused(correct, corpus, monkeypatch, capsys, host):
     assert code == 2
     assert repr(host) in err
     assert "refusing" in err.lower()
+    # A wildcard reports itself as one rather than as merely not loopback, so the
+    # message names the thing the person typed wrong.
+    assert "wildcard" in err.lower()
     # Whatever was bound to find out is closed again: nothing is left listening.
     assert all(server.socket.fileno() == -1 for server in created)
+
+
+# RFC 5737 TEST-NET-1, reserved for documentation: it is nobody's home network, so
+# no tracked file here points at a real machine. Never bound either — the test
+# below binds loopback and only reports this as the address the kernel gave back.
+DOCUMENTATION_ADDRESS = "192.0.2.10"
+
+
+def test_a_non_loopback_host_is_refused(correct, corpus, monkeypatch, capsys):
+    """A wildcard is not the only way past "this machine only".
+
+    An address on the home network is neither a wildcard nor loopback, and binding
+    it would hand the unauthenticated write endpoint to every device in the house
+    while both stderr messages still called this a tool for this desk.
+    """
+    monkeypatch.setattr(correct, "CORRECT_PORT", 0)
+    created = []
+    real_make_server = correct.make_server
+
+    def spy(host, port, **roots):
+        # Bound on loopback whatever was asked for. What is under test is what
+        # `main` does with the address the kernel reports back, and finding that
+        # out must not put this endpoint on a real network even once.
+        server = real_make_server("127.0.0.1", port, **roots)
+        server.server_address = (host, server.server_address[1])
+        server.serve_forever = lambda *a, **kw: pytest.fail(
+            f"started serving on the non-loopback address {server.server_address}"
+        )
+        created.append(server)
+        return server
+
+    monkeypatch.setattr(correct, "make_server", spy)
+
+    code = correct.main([
+        "--host", DOCUMENTATION_ADDRESS,
+        "--sidecars", str(corpus.sidecars),
+        "--corrections", str(corpus.corrections),
+        "--thumbs", str(corpus.thumbs),
+        "--client", str(corpus.client),
+    ])
+    err = capsys.readouterr().err
+
+    assert code == 2
+    assert DOCUMENTATION_ADDRESS in err
+    assert "loopback" in err.lower()
+    # Refused after the bind, so the socket it bound to find out has to be gone.
+    assert all(server.socket.fileno() == -1 for server in created)
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1"])
+def test_either_spelling_of_loopback_still_starts(correct, corpus, monkeypatch, capsys, host):
+    """Both are this machine and only this machine, so both are served."""
+    monkeypatch.setattr(correct, "CORRECT_PORT", 0)
+    bound = []
+    real_make_server = correct.make_server
+
+    def spy(host, port, **roots):
+        server = real_make_server(host, port, **roots)
+        server.serve_forever = lambda *a, **kw: None
+        bound.append(server)
+        return server
+
+    monkeypatch.setattr(correct, "make_server", spy)
+
+    code = correct.main([
+        "--host", host,
+        "--sidecars", str(corpus.sidecars),
+        "--corrections", str(corpus.corrections),
+        "--thumbs", str(corpus.thumbs),
+        "--client", str(corpus.client),
+    ])
+
+    assert code == 0, capsys.readouterr().err
+    assert bound[0].server_address[0] == host
 
 
 def test_the_host_defaults_to_loopback(correct, corpus, monkeypatch, capsys):
