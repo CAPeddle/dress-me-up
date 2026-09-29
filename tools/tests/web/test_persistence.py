@@ -26,7 +26,7 @@ from tests.web.conftest import (
 pytestmark = pytest.mark.browser
 
 BUILD_ID = "fixture-0001"
-ITEM_COUNT = 6  # the fixture catalog's item count; indices run 0..5
+ITEM_COUNT = 7  # the fixture catalog's item count; indices run 0..6
 
 
 def strings_in(value):

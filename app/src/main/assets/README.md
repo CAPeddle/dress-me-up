@@ -43,8 +43,9 @@ mechanics; they are not enough to look right.
 ## Categories
 
 `hat`, `hair`, `top`, `bottom`, `dress`, `shoes`, `weapon`, `shield`,
-`accessory`, `wings`, `mount` — defined in `tools/dressup_pipeline/models.py`.
-An item only snaps to a point declaring its own category.
+`accessory`, `wings`, `companion`, `mount` — defined in
+`tools/dressup_pipeline/models.py`. An item only snaps to a point declaring its
+own category.
 
 Two points may share a coordinate (`dress` and `top` overlap on the torso); the
 category filter keeps them from competing.

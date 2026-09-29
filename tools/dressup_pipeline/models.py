@@ -26,6 +26,10 @@ CATEGORIES = (
     "shield",
     "accessory",
     "wings",
+    # A creature placed on a character rather than worn by it. Sits beside
+    # `mount` — the rideable a Dragon book may yet supply — because both are
+    # creatures rather than clothing, and nothing worn follows them.
+    "companion",
     "mount",
 )
 

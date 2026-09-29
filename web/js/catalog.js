@@ -6,7 +6,7 @@
 // Slot categories in the pipeline's order (dressup_pipeline/models.py CATEGORIES).
 export const CATEGORY_ORDER = Object.freeze([
   "hat", "hair", "top", "bottom", "dress", "shoes",
-  "weapon", "shield", "accessory", "wings", "mount",
+  "weapon", "shield", "accessory", "wings", "companion", "mount",
 ]);
 
 export class ContentError extends Error {

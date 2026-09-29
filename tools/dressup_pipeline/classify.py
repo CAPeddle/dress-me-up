@@ -53,8 +53,13 @@ def shape_of(sidecar: Sidecar) -> Shape:
 class HeuristicClassifier:
     """Rule-based first pass, tuned for the fantasy/knight sticker books.
 
-    Sticker sheets group items by kind and lay them out roughly by body order, so
-    vertical position on the page carries real signal alongside shape.
+    Its vertical rules assume a sheet laid out roughly by body order. That is an
+    assumption, not a property of sticker sheets in general, and it does not
+    hold for the scans in hand: they sit on a padded canvas, so nothing reaches
+    the lower branches at all.
+
+    So the category is a suggestion that orders the review and nothing more — the
+    catalog takes an item's category from a human correction, never from here.
     """
 
     def classify(self, sidecar: Sidecar, shape: Shape) -> tuple[str, str]:

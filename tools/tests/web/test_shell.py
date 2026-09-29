@@ -58,7 +58,10 @@ def test_supply_is_grouped_by_category_in_pipeline_order(page, base_url):
     groups = page.locator("[data-rig-region='supply'] [data-category]")
     names = [groups.nth(i).get_attribute("data-category") for i in range(groups.count())]
     present = {i["category"] for i in CATALOG["items"]}
-    order = ["hat", "hair", "top", "bottom", "dress", "shoes", "weapon", "shield", "accessory", "wings", "mount"]
+    order = [
+        "hat", "hair", "top", "bottom", "dress", "shoes",
+        "weapon", "shield", "accessory", "wings", "companion", "mount",
+    ]
     assert names == [c for c in order if c in present]
     assert page.locator("[data-category='hat'] [data-rig-kind='tile']").count() == 2
 
