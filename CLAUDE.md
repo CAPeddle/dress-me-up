@@ -54,8 +54,21 @@ tools/.venv/bin/python tools/make_smoke_pdf.py            # synthetic stand-in f
 tools/.venv/bin/python tools/triage_pages.py content/source/<Set>/*.pdf   # manifests + contact sheets -> content/triage/
 tools/.venv/bin/python tools/extract_pdf.py content/source/<Set>/*.pdf --triage   # rotate + cut only item sheets
 tools/.venv/bin/python tools/classify_and_qa.py --min-quality 0.90
-tools/.venv/bin/python tools/build_catalog.py --min-quality 0.90 --group fantasy --body-height 1000
+tools/.venv/bin/python tools/correct_server.py        # the labelling pass -> tools/corrections/
+tools/.venv/bin/python tools/build_catalog.py --group fantasy --body-height 1000
+tools/.venv/bin/python tools/repair_queue.py          # what was rejected, and labels that lost their item
 ```
+
+**The catalogue accepts only human labels.** `correct_server.py` serves a wall of
+every extracted item on loopback; filing them writes `tools/corrections/<stem>.corrections.json`,
+and `build_catalog.py` includes exactly the items carrying one of those labels,
+under the category a person filed. So an un-corrected corpus builds an empty
+catalog and exits non-zero naming the missing labelling — that is the ordinary
+state of a corpus nobody has been through, not a failure. `--min-quality` no
+longer gates anything: QA's verdict became advisory, and the build reports what
+it would have excluded instead of applying it. The classifier still writes
+`category` onto each sidecar, but that is a suggestion which only orders the
+wall.
 
 Real scans live under `content/source/<Set>/` (`Fantasy`, `Knight`, ...) because
 `HeuristicClassifier._group` takes the group from the containing folder first —
@@ -98,6 +111,13 @@ disappear instead of lingering for the catalog build to ingest. Downstream
 fields survive that only where the item comes back with identical geometry —
 same page, bbox, page size and DPI. A cutout that moved is a different item and
 has to be classified and QA'd again.
+
+**Human labels live beside the sidecar, never on it** (`dressup_pipeline/corrections.py`).
+A correction is keyed by source PDF stem plus those same five geometry fields, so
+`classify_sidecar` keeps its unconditional write and the additive rule needs no
+exception. The five fields alone are not unique — two scans of one physical page
+share byte-identical boxes — which is why the stem is part of the key. A
+correction whose geometry matches nothing is kept and reported, never dropped.
 
 **Page dimensions live in the sidecar, not on the CLI.** `shape_of()` classifies
 from geometry relative to the page, and passing those dimensions separately made
