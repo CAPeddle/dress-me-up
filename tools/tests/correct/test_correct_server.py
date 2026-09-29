@@ -807,3 +807,19 @@ def test_filing_and_unfiling_one_item_in_one_batch_is_refused(running, corpus):
     assert status == 400
     assert "scan-a-p000-i000" in payload["error"]
     assert corpus.corrections_file("scan-a").read_bytes() == before
+
+
+def test_filing_one_item_twice_in_one_batch_is_refused(running, corpus):
+    """Two categories for one item is the same ambiguity wearing different clothes.
+
+    Merging is last-wins, so honouring it would drop a verdict somebody asked for
+    just as explicitly as the one that landed.
+    """
+    status, _, payload = running.post_json("/api/corrections", {"filings": [
+        {"item_id": "scan-a-p000-i000", "category": "hat"},
+        {"item_id": "scan-a-p000-i000", "category": "shoes"},
+    ]})
+
+    assert status == 400
+    assert "scan-a-p000-i000" in payload["error"]
+    assert read_corrections(corpus.corrections_file("scan-a")) == {}

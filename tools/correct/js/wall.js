@@ -266,8 +266,19 @@ function selectInFiled(itemId, extend) {
   state.focus = itemId;
   state.selected.clear();
   renderWindow();
-  renderFiled();
+  paintFiledSelection();
   paintStatus();
+}
+
+// Selecting inside the filed panel changes which tiles are picked and nothing
+// else, so it patches those attributes rather than rebuilding the panel. By the
+// end of a pass the panel holds the whole corpus, and every click through a
+// thousand tiles is the one interaction this view exists for (R6).
+function paintFiledSelection() {
+  for (const node of filedEl.querySelectorAll("[data-wall-kind='filed-tile']")) {
+    const picked = state.picked.has(node.dataset.wallItem);
+    node.dataset.wallSelected = picked ? "true" : "false";
+  }
 }
 
 // ---------------------------------------------------------------- filing

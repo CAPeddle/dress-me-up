@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -146,16 +146,8 @@ class Correction:
     # -- persistence ------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "source_pdf": self.source_pdf,
-            "page": self.page,
-            "bbox": {"x": self.bbox.x, "y": self.bbox.y, "w": self.bbox.w, "h": self.bbox.h},
-            "page_width": self.page_width,
-            "page_height": self.page_height,
-            "dpi": self.dpi,
-            "category": self.category,
-            "rejection": self.rejection,
-        }
+        # `asdict` recurses into `BBox`, so the nested shape comes for free.
+        return asdict(self)
 
     @classmethod
     def for_sidecar(

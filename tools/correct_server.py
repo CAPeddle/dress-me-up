@@ -348,10 +348,12 @@ def parse_filings(
 
     filings: list[Correction] = []
     unfilings: list[CorrectionKey] = []
-    # Which way each item was meant to go. Withdrawals are applied before
-    # filings, so a batch asking for both on one item would keep the filing and
-    # drop the undo silently — the one outcome nobody asked for.
-    intents: dict[str, str] = {}
+    # One entry per item. Withdrawals are applied before filings and filings
+    # merge last-wins, so a batch naming one item twice would resolve itself
+    # silently — keeping the filing over its undo, or one category over another
+    # that was asked for just as explicitly. Which won is not ours to pick. The
+    # wall keys its open batch by item, so this only arrives from a client bug.
+    seen: set[str] = set()
     for entry in raw:
         if not isinstance(entry, dict):
             raise BadRequest(f"filing {entry!r} is not an object")
@@ -360,9 +362,9 @@ def parse_filings(
             raise BadRequest(f"unknown item {item_id!r}")
         category = entry.get("category")
         rejection = entry.get("rejection")
-        intent = "unfile" if entry.get("unfile") else "file"
-        if intents.setdefault(item_id, intent) != intent:
-            raise BadRequest(f"{item_id}: filed and unfiled in one batch")
+        if item_id in seen:
+            raise BadRequest(f"{item_id}: named twice in one batch")
+        seen.add(item_id)
         if entry.get("unfile"):
             # Refused rather than resolved: filing and withdrawing one item in the
             # same breath is a client bug, and picking a winner would hide it.
