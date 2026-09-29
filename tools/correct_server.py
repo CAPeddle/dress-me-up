@@ -348,6 +348,10 @@ def parse_filings(
 
     filings: list[Correction] = []
     unfilings: list[CorrectionKey] = []
+    # Which way each item was meant to go. Withdrawals are applied before
+    # filings, so a batch asking for both on one item would keep the filing and
+    # drop the undo silently — the one outcome nobody asked for.
+    intents: dict[str, str] = {}
     for entry in raw:
         if not isinstance(entry, dict):
             raise BadRequest(f"filing {entry!r} is not an object")
@@ -356,6 +360,9 @@ def parse_filings(
             raise BadRequest(f"unknown item {item_id!r}")
         category = entry.get("category")
         rejection = entry.get("rejection")
+        intent = "unfile" if entry.get("unfile") else "file"
+        if intents.setdefault(item_id, intent) != intent:
+            raise BadRequest(f"{item_id}: filed and unfiled in one batch")
         if entry.get("unfile"):
             # Refused rather than resolved: filing and withdrawing one item in the
             # same breath is a client bug, and picking a winner would hide it.

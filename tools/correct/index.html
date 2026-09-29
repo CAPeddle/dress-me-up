@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en" data-wall="loading">
+<head>
+<meta charset="utf-8">
+<!-- The server's own policy string, character for character: the page is served by
+     `tools/correct_server.py` and a meta tag that disagreed with the header would
+     leave the tighter of the two in force and the looser one a lie. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; form-action 'none'; base-uri 'none'">
+<title>Dress Me Up &mdash; label the corpus</title>
+<link rel="stylesheet" href="css/wall.css">
+</head>
+<body>
+<header class="header" data-wall-region="header">
+  <h1 class="title">Label the corpus</h1>
+  <p class="status" data-wall-region="status" data-wall-remaining="0" data-wall-filed="0" data-wall-queued="0">
+    <span class="tally remaining">&mdash;</span>
+    <span class="tally filed"></span>
+    <span class="tally queued"></span>
+  </p>
+  <div class="legend" data-wall-region="legend"></div>
+</header>
+<p class="message" data-wall-region="message" hidden></p>
+<main class="wall" data-wall-region="wall">
+  <div class="canvas"></div>
+</main>
+<div class="overlay enlarge" data-wall-region="enlarge" hidden></div>
+<div class="overlay filed" data-wall-region="filed" hidden></div>
+<script type="module" src="js/wall.js"></script>
+</body>
+</html>

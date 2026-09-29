@@ -19,6 +19,7 @@ import importlib.util
 import json
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -244,3 +245,157 @@ def snapshot(*roots: Path) -> dict[Path, bytes | None]:
         for path in root.rglob("*"):
             seen[path] = path.read_bytes() if path.is_file() else None
     return seen
+
+
+# ---------------------------------------------------------------- the wall client
+# The page is served from its tracked location, never copied into `tmp_path`: a
+# copy is a second version of the thing under test, and the CSP test compares the
+# real file's meta tag against the real server's constant.
+
+CLIENT_DIR = TOOLS_DIR / "correct"
+
+# A desk, not a tablet: the wall's column count comes from the viewport, so the
+# windowing test needs one that does not move under it.
+DESKTOP = {"width": 1280, "height": 800}
+
+
+@pytest.fixture
+def wall(corpus, server_factory) -> RunningServer:
+    """The tracked wall client served against a throwaway corpus."""
+    return server_factory(corpus, client_dir=CLIENT_DIR)
+
+
+@pytest.fixture
+def empty_corpus(tmp_path) -> Corpus:
+    """A corpus directory with nothing extracted into it yet."""
+    root = tmp_path / "empty"
+    built = Corpus(
+        root=root,
+        sidecars=root / "sidecars",
+        corrections=root / "corrections",
+        thumbs=root / "thumbs",
+        client=CLIENT_DIR,
+    )
+    built.sidecars.mkdir(parents=True)
+    built.corrections.mkdir(parents=True)
+    return built
+
+
+BIG_COUNT = 1200
+
+
+@pytest.fixture
+def big_corpus(tmp_path) -> Corpus:
+    """A corpus several times the real one's size, for the windowing test.
+
+    Every item points at one cutout on disk rather than its own: the wall is being
+    measured on how many thumbnails it asks for, and writing 1200 distinct PNGs
+    would spend the whole test budget on the fixture. The geometry still differs
+    per item, because geometry is the identity a filing is keyed on.
+    """
+    from dressup_pipeline.models import CATEGORIES
+
+    root = tmp_path / "big"
+    built = Corpus(
+        root=root,
+        sidecars=root / "sidecars",
+        corrections=root / "corrections",
+        thumbs=root / "thumbs",
+        client=CLIENT_DIR,
+    )
+    built.sidecars.mkdir(parents=True)
+    built.corrections.mkdir(parents=True)
+    for index in range(BIG_COUNT):
+        built.add(
+            f"scan-big-p{index // 100:03d}-i{index % 100:03d}",
+            stem="scan-big",
+            page=index // 100,
+            bbox=(20 + (index % 40) * 60, 20 + (index // 40) * 100, 44, 56),
+            category=CATEGORIES[index % len(CATEGORIES)],
+            image="shared.png",
+            write_image=index == 0,
+        )
+    return built
+
+
+@pytest.fixture(scope="session")
+def browser_context_args(browser_context_args):
+    return {**browser_context_args, "viewport": dict(DESKTOP)}
+
+
+@pytest.fixture
+def console_errors(page):
+    """Console errors and uncaught exceptions the page raised."""
+    errors: list[str] = []
+    page.on("console", lambda msg: errors.append(msg.text) if msg.type == "error" else None)
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+    return errors
+
+
+@pytest.fixture(autouse=True)
+def _short_page_timeout(request):
+    """Keep a broken page from stalling the run: 10 s is generous on loopback."""
+    if "page" in request.fixturenames:
+        request.getfixturevalue("page").set_default_timeout(10_000)
+
+
+# -- helpers, imported by the browser tests ------------------------------------
+
+def open_wall(page, url):
+    """Load the wall and wait for it to have settled either way."""
+    page.goto(url)
+    page.wait_for_selector("html[data-wall='ready'], html[data-wall='failed']")
+    return page
+
+
+def legend(page) -> dict[str, str]:
+    """The key map as the page publishes it: action name -> key.
+
+    Read off the page rather than hardcoded, because the mapping is derived from
+    the arrays the server sends and a test that assumed one would only ever check
+    its own copy.
+    """
+    return dict(
+        page.eval_on_selector_all(
+            "[data-wall-kind='legend-entry']",
+            "els => els.map(e => [e.dataset.wallAction, e.dataset.wallKey])",
+        )
+    )
+
+
+def status(page, name: str) -> int:
+    return int(page.get_attribute("[data-wall-region='status']", f"data-wall-{name}"))
+
+
+def tile(page, item_id: str):
+    return page.locator(f"[data-wall-kind='tile'][data-wall-item='{item_id}']")
+
+
+def rendered_items(page) -> list[str]:
+    """The item ids the wall has actually put in the DOM, in wall order.
+
+    Only the window: the full order is the manifest's, which a test reads from the
+    server rather than from a page that deliberately does not hold all of it.
+    """
+    return page.eval_on_selector_all(
+        "[data-wall-kind='tile']", "els => els.map(e => e.dataset.wallItem)"
+    )
+
+
+def click_tile(page, item_id: str, shift: bool = False):
+    tile(page, item_id).click(modifiers=["Shift"] if shift else [])
+
+
+def wait_for_flush(page):
+    """Wait until nothing is queued or in flight, so the disk holds every filing."""
+    page.wait_for_selector("[data-wall-region='status'][data-wall-queued='0']")
+
+
+def wait_for_file(path, timeout: float = 5.0):
+    """Poll for a corrections file a page-hide flush is expected to have written."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.05)
+    return False

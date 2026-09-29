@@ -786,3 +786,24 @@ def test_an_unfile_spanning_two_pdfs_touches_only_those_files(running, corpus):
     changed = {path for path in set(before) | set(after) if before.get(path) != after.get(path)}
     assert changed == {corpus.corrections_file("scan-a"), corpus.corrections_file("scan-b")}
     assert read_corrections(corpus.corrections_file("scan-a")) == {}
+
+
+def test_filing_and_unfiling_one_item_in_one_batch_is_refused(running, corpus):
+    """Two entries, opposite intents, one item: which one won is not for us to guess.
+
+    Withdrawals are applied before filings, so resolving it silently would keep
+    the filing and quietly drop the undo — the one outcome nobody asked for. The
+    wall keys its open batch by item, so this only arrives from a client bug.
+    """
+    running.post_json("/api/corrections", {"filings": [
+        {"item_id": "scan-a-p000-i001", "category": "top"}]})
+    before = corpus.corrections_file("scan-a").read_bytes()
+
+    status, _, payload = running.post_json("/api/corrections", {"filings": [
+        {"item_id": "scan-a-p000-i000", "category": "hat"},
+        {"item_id": "scan-a-p000-i000", "unfile": True},
+    ]})
+
+    assert status == 400
+    assert "scan-a-p000-i000" in payload["error"]
+    assert corpus.corrections_file("scan-a").read_bytes() == before
