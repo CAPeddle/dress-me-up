@@ -11,6 +11,7 @@ judgement, one silently and one loudly.
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -410,3 +411,32 @@ def test_a_failed_write_leaves_the_previous_labelling_intact(tmp_path, monkeypat
 
     assert path.read_bytes() == before
     assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_corrections_path_is_idempotent_on_a_dotted_stem(tmp_path):
+    """The path is built from a stem as readily as from a filename.
+
+    Both production callers already hold a stem, and a stem may contain dots:
+    scanners name files by timestamp and `2026-09-28 14.08.32.pdf` is an
+    ordinary one. Stripping at the last dot regardless would route the filing to
+    a file whose name disagrees with the records inside it.
+    """
+    assert corrections_path(tmp_path, "album.2.pdf").name == f"album.2{CORRECTIONS_SUFFIX}"
+    assert corrections_path(tmp_path, "album.2").name == f"album.2{CORRECTIONS_SUFFIX}"
+    assert corrections_path(tmp_path, Path("/scans/album.2.pdf")).name == f"album.2{CORRECTIONS_SUFFIX}"
+
+
+def test_a_filing_on_a_dotted_stem_reads_back(tmp_path):
+    """Write it the way the server does, then read it the way the build does.
+
+    The loader takes the stem back off the filename and refuses a record naming
+    another PDF, so a write that lands under a truncated name loses that whole
+    book's labelling — silently at write time, and only visible the next time
+    anything tries to read it.
+    """
+    correction = _correction(source_pdf="2026-09-28 14.08.32", category="hat")
+    path = corrections_path(tmp_path, correction.source_pdf)
+
+    write_corrections(path, [correction])
+
+    assert read_corrections(path) == {correction.key: correction}

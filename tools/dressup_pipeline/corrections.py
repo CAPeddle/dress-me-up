@@ -225,8 +225,19 @@ def sidecar_key(sidecar: Sidecar) -> CorrectionKey:
 
 
 def corrections_path(corrections_dir: Path, pdf: Path | str) -> Path:
-    """Where one PDF's corrections live. `pdf` may be a path, a filename or a stem."""
-    return corrections_dir / f"{Path(pdf).stem}{CORRECTIONS_SUFFIX}"
+    """Where one PDF's corrections live. `pdf` may be a path, a filename or a stem.
+
+    Only a real `.pdf` suffix comes off, so passing a stem back in returns the
+    same path. `Path.stem` would strip at the last dot whatever it found, and a
+    stem may hold dots — scanners name files by timestamp, and
+    `2026-09-28 14.08.32.pdf` is an ordinary one. Both callers already hold a
+    stem, so stripping again would write that book's labelling to
+    `2026-09-28 14.08.corrections.json`, which the loader then refuses record by
+    record for naming another PDF.
+    """
+    name = Path(pdf).name
+    stem = name[:-4] if name.lower().endswith(".pdf") else name
+    return corrections_dir / f"{stem}{CORRECTIONS_SUFFIX}"
 
 
 def read_corrections(path: Path) -> dict[CorrectionKey, Correction]:
