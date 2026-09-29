@@ -324,12 +324,19 @@ def corpus_manifest(
 
 # ---------------------------------------------------------------- the one write
 
-def parse_filings(payload: object, items: dict[str, CorpusItem]) -> list[Correction]:
-    """Turn a posted batch into corrections, or refuse the whole batch.
+def parse_filings(
+    payload: object, items: dict[str, CorpusItem]
+) -> tuple[list[Correction], list[CorrectionKey]]:
+    """Turn a posted batch into corrections to file and identities to unfile.
 
     Every record is built with `Correction.for_sidecar` off the sidecar the server
     already holds, so the client supplies an item id and a verdict and nothing
     else: geometry it sent would be geometry nobody checked.
+
+    `"unfile": true` in place of a verdict withdraws whatever was filed for that
+    item. Undo needs it: a filed item leaves the wall at once and the batch
+    flushes on a short interval, so one mis-keyed run is on disk before anybody
+    reaches for undo, and without this the only way back is editing the file.
     """
     if not isinstance(payload, dict):
         raise BadRequest("expected an object with a 'filings' list")
@@ -339,7 +346,8 @@ def parse_filings(payload: object, items: dict[str, CorpusItem]) -> list[Correct
     if not raw:
         raise BadRequest("'filings' is empty; nothing to file")
 
-    filings = []
+    filings: list[Correction] = []
+    unfilings: list[CorrectionKey] = []
     for entry in raw:
         if not isinstance(entry, dict):
             raise BadRequest(f"filing {entry!r} is not an object")
@@ -348,6 +356,13 @@ def parse_filings(payload: object, items: dict[str, CorpusItem]) -> list[Correct
             raise BadRequest(f"unknown item {item_id!r}")
         category = entry.get("category")
         rejection = entry.get("rejection")
+        if entry.get("unfile"):
+            # Refused rather than resolved: filing and withdrawing one item in the
+            # same breath is a client bug, and picking a winner would hide it.
+            if category is not None or rejection is not None:
+                raise BadRequest(f"{item_id}: unfile carries a verdict as well")
+            unfilings.append(sidecar_key(items[item_id].sidecar))
+            continue
         if category is not None and not isinstance(category, str):
             raise BadRequest(f"{item_id}: category {category!r} is not a name")
         if rejection is not None and not isinstance(rejection, str):
@@ -360,10 +375,14 @@ def parse_filings(payload: object, items: dict[str, CorpusItem]) -> list[Correct
             )
         except CorrectionError as exc:
             raise BadRequest(str(exc)) from exc
-    return filings
+    return filings, unfilings
 
 
-def apply_filings(corrections_dir: Path, filings: list[Correction]) -> tuple[list[dict], list[dict]]:
+def apply_filings(
+    corrections_dir: Path,
+    filings: list[Correction],
+    unfilings: list[CorrectionKey] | tuple[()] = (),
+) -> tuple[list[dict], list[dict]]:
     """Merge a batch into the per-PDF files it belongs to; report each file's outcome.
 
     The wall is ordered by the classifier's guess, so one selection spans several
@@ -377,9 +396,14 @@ def apply_filings(corrections_dir: Path, filings: list[Correction]) -> tuple[lis
     batches: dict[str, list[Correction]] = {}
     for correction in filings:
         batches.setdefault(correction.source_pdf, []).append(correction)
+    # The stem is the key's first field, so a withdrawal routes to its file the
+    # same way a filing does.
+    withdrawals: dict[str, list[CorrectionKey]] = {}
+    for key in unfilings:
+        withdrawals.setdefault(key[0], []).append(key)
 
     written, failed = [], []
-    for stem in sorted(batches):
+    for stem in sorted(set(batches) | set(withdrawals)):
         path = corrections_path(corrections_dir, stem)
         try:
             # The directory is tracked and normally there; a branch switch mid-
@@ -387,14 +411,25 @@ def apply_filings(corrections_dir: Path, filings: list[Correction]) -> tuple[lis
             # of refusing to recreate it.
             path.parent.mkdir(parents=True, exist_ok=True)
             merged = read_corrections(path)
-            for correction in batches[stem]:
+            gone = 0
+            for key in withdrawals.get(stem, ()):
+                # Withdrawing something never filed is the state the caller asked
+                # for, so it is silent rather than an error.
+                gone += merged.pop(key, None) is not None
+            for correction in batches.get(stem, ()):
                 merged[correction.key] = correction
-            write_corrections(path, merged.values())
+            if merged or path.exists():
+                write_corrections(path, merged.values())
         except (CorrectionError, OSError) as exc:
             # Named per PDF: a partial failure has to say which books were written.
             failed.append({"source_pdf": stem, "error": str(exc)})
             continue
-        written.append({"source_pdf": stem, "filed": len(batches[stem]), "total": len(merged)})
+        written.append({
+            "source_pdf": stem,
+            "filed": len(batches.get(stem, ())),
+            "unfiled": gone,
+            "total": len(merged),
+        })
     return written, failed
 
 
@@ -573,7 +608,7 @@ class CorrectHandler(BaseHTTPRequestHandler):
             self._refuse_json(HTTPStatus.BAD_REQUEST, f"invalid JSON: {exc}")
             return
         try:
-            filings = parse_filings(payload, self.server.items)
+            filings, unfilings = parse_filings(payload, self.server.items)
         except BadRequest as exc:
             # Whole-batch: a selection filed by one keystroke is one judgement, and
             # landing half of it would leave the person guessing which half.
@@ -584,7 +619,9 @@ class CorrectHandler(BaseHTTPRequestHandler):
         # and the second write would erase the first batch's filings — the same
         # erasure the merge exists to prevent, arrived at concurrently.
         with self.server.write_lock:
-            written, failed = apply_filings(self.server.corrections_dir, filings)
+            written, failed = apply_filings(
+                self.server.corrections_dir, filings, unfilings
+            )
         status = HTTPStatus.INTERNAL_SERVER_ERROR if failed else HTTPStatus.OK
         data = (json.dumps({"written": written, "failed": failed}) + "\n").encode("utf-8")
         self._send(status, "application/json; charset=utf-8", data)

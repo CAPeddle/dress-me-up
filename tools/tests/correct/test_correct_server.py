@@ -98,7 +98,7 @@ def test_a_second_batch_keeps_the_first_batch(running, corpus):
     )
 
     assert status == 200
-    assert payload["written"] == [{"source_pdf": "scan-a", "filed": 1, "total": 2}]
+    assert payload["written"] == [{"source_pdf": "scan-a", "filed": 1, "unfiled": 0, "total": 2}]
 
     filed = {
         correction.bbox.as_tuple(): correction.category
@@ -135,8 +135,8 @@ def test_a_selection_spanning_two_pdfs_is_written_per_pdf(running, corpus):
 
     assert status == 200
     assert payload["written"] == [
-        {"source_pdf": "scan-a", "filed": 2, "total": 2},
-        {"source_pdf": "scan-b", "filed": 1, "total": 1},
+        {"source_pdf": "scan-a", "filed": 2, "unfiled": 0, "total": 2},
+        {"source_pdf": "scan-b", "filed": 1, "unfiled": 0, "total": 1},
     ]
     assert len(read_corrections(corpus.corrections_file("scan-a"))) == 2
     assert len(read_corrections(corpus.corrections_file("scan-b"))) == 1
@@ -699,3 +699,90 @@ def test_a_repeated_item_id_is_refused_before_anything_binds(correct, corpus):
             corrections_dir=corpus.corrections, thumbs_dir=corpus.thumbs,
         )
     assert "scan-a-p000-i000" in str(caught.value)
+
+
+# ------------------------------------------------- unfiling, so undo can reach disk
+
+def test_an_unfile_removes_that_record_and_leaves_the_rest(running, corpus):
+    """Undo has to reach disk, because a filed item leaves the wall immediately.
+
+    A run filed by one mis-key can be dozens of items, and the batch flushes on a
+    short interval, so by the time somebody reaches for undo the records are
+    usually already written. Without this the only recovery is editing the file.
+    """
+    running.post_json("/api/corrections", {"filings": [
+        {"item_id": "scan-a-p000-i000", "category": "hat"},
+        {"item_id": "scan-a-p000-i001", "category": "top"},
+    ]})
+
+    status, _, payload = running.post_json(
+        "/api/corrections", {"filings": [{"item_id": "scan-a-p000-i000", "unfile": True}]}
+    )
+
+    assert status == 200, payload
+    assert payload["failed"] == []
+    assert payload["written"] == [{"source_pdf": "scan-a", "filed": 0, "unfiled": 1, "total": 1}]
+    on_disk = read_corrections(corpus.corrections_file("scan-a"))
+    assert [c.category for c in on_disk.values()] == ["top"]
+
+
+def test_an_unfiled_item_is_on_the_wall_again(running, corpus):
+    """The manifest is what the wall reads, so undo is only real if `filed` clears."""
+    running.post_json("/api/corrections", {"filings": [
+        {"item_id": "scan-a-p000-i000", "category": "hat"}]})
+    filed = {i["item_id"]: i["filed"] for i in running.get_json("/api/corpus")["items"]}
+    assert filed["scan-a-p000-i000"] == {"category": "hat", "rejection": None}
+
+    running.post_json("/api/corrections", {"filings": [
+        {"item_id": "scan-a-p000-i000", "unfile": True}]})
+
+    after = {i["item_id"]: i["filed"] for i in running.get_json("/api/corpus")["items"]}
+    assert after["scan-a-p000-i000"] is None
+
+
+def test_unfiling_something_never_filed_is_not_an_error(running, corpus):
+    """Undo of a filing the server never received is the state the caller wanted."""
+    status, _, payload = running.post_json(
+        "/api/corrections", {"filings": [{"item_id": "scan-b-p000-i000", "unfile": True}]}
+    )
+
+    assert status == 200, payload
+    assert payload["failed"] == []
+    assert read_corrections(corpus.corrections_file("scan-b")) == {}
+
+
+def test_an_unfile_carrying_a_verdict_is_refused_whole(running, corpus):
+    """Filing and unfiling one item in one breath is a client bug, not a merge."""
+    running.post_json("/api/corrections", {"filings": [
+        {"item_id": "scan-a-p000-i000", "category": "hat"}]})
+    before = corpus.corrections_file("scan-a").read_bytes()
+
+    status, _, payload = running.post_json("/api/corrections", {"filings": [
+        {"item_id": "scan-a-p000-i001", "category": "top"},
+        {"item_id": "scan-a-p000-i000", "unfile": True, "category": "shoes"},
+    ]})
+
+    assert status == 400
+    assert "scan-a-p000-i000" in payload["error"]
+    assert corpus.corrections_file("scan-a").read_bytes() == before
+
+
+def test_an_unfile_spanning_two_pdfs_touches_only_those_files(running, corpus):
+    """Undo of a run crosses books the same way filing it did."""
+    running.post_json("/api/corrections", {"filings": [
+        {"item_id": "scan-a-p000-i000", "category": "hat"},
+        {"item_id": "scan-b-p000-i000", "category": "wings"},
+    ]})
+    before = snapshot(corpus.sidecars, corpus.corrections, corpus.thumbs)
+
+    status, _, payload = running.post_json("/api/corrections", {"filings": [
+        {"item_id": "scan-a-p000-i000", "unfile": True},
+        {"item_id": "scan-b-p000-i000", "unfile": True},
+    ]})
+
+    assert status == 200, payload
+    assert [entry["source_pdf"] for entry in payload["written"]] == ["scan-a", "scan-b"]
+    after = snapshot(corpus.sidecars, corpus.corrections, corpus.thumbs)
+    changed = {path for path in set(before) | set(after) if before.get(path) != after.get(path)}
+    assert changed == {corpus.corrections_file("scan-a"), corpus.corrections_file("scan-b")}
+    assert read_corrections(corpus.corrections_file("scan-a")) == {}
