@@ -399,3 +399,57 @@ def wait_for_file(path, timeout: float = 5.0):
             return True
         time.sleep(0.05)
     return False
+
+
+class HeldWrite:
+    """The server's first correction write, stopped in the middle of itself.
+
+    Two of the wall's failure paths only exist while a request is genuinely in
+    flight: a second verdict chosen before the first one's batch has landed, and a
+    request that wedges instead of erroring. Neither can be staged from the page —
+    a `fetch` that fails fails immediately — so the stall is put where the work
+    actually is. `correct_server` resolves `write_corrections` by name at call
+    time, which is what `test_two_batches_for_one_pdf_at_once_keep_both` already
+    leans on, so the real write can be swapped for one that announces itself and
+    then waits to be let go.
+
+    Only the first write is held. Every later one runs for real, so a test can
+    stall one batch and still watch the next reach disk.
+    """
+
+    def __init__(self, real):
+        self._real = real
+        self._entered = threading.Event()
+        self._go = threading.Event()
+        self._error: Exception | None = None
+        self.calls = 0
+
+    def __call__(self, path, corrections):
+        self.calls += 1
+        if self.calls > 1:
+            return self._real(path, corrections)
+        self._entered.set()
+        # Bounded, so a test that forgets to release fails as a test rather than
+        # hanging the run behind a server thread nobody will wake.
+        self._go.wait(timeout=30)
+        if self._error is not None:
+            raise self._error
+        return self._real(path, corrections)
+
+    def wait_until_in_flight(self, timeout: float = 10.0) -> None:
+        assert self._entered.wait(timeout), "the batch never reached the server's write"
+
+    def release(self, error: Exception | None = None) -> None:
+        """Let the held write finish, either for real or by raising `error`."""
+        self._error = error
+        self._go.set()
+
+
+@pytest.fixture
+def held_write(correct, monkeypatch) -> HeldWrite:
+    held = HeldWrite(correct.write_corrections)
+    monkeypatch.setattr(correct, "write_corrections", held)
+    yield held
+    # Whatever the test did, the server thread must not be left parked on the
+    # write lock while the next test starts.
+    held.release()

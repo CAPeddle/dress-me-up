@@ -13,13 +13,16 @@ version).
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
-from dressup_pipeline.corrections import REJECTION_KINDS, read_corrections
+from dressup_pipeline.corrections import CorrectionError, REJECTION_KINDS, read_corrections
 from dressup_pipeline.models import CATEGORIES
 
 from tests.correct.conftest import (
     BIG_COUNT,
+    CLIENT_DIR,
     click_tile,
     legend,
     open_wall,
@@ -42,6 +45,26 @@ def file_as(page, item_ids, action: str):
     for index, item_id in enumerate(item_ids):
         click_tile(page, item_id, shift=index > 0)
     page.keyboard.press(legend(page)[action])
+
+
+def selected_items(page) -> list[str]:
+    """The item ids the wall currently shows as selected, in wall order."""
+    return page.eval_on_selector_all(
+        "[data-wall-kind='tile'][data-wall-selected='true']",
+        "els => els.map(e => e.dataset.wallItem)",
+    )
+
+
+def write_timeout_ms() -> int:
+    """The client's own give-up budget, read out of its source rather than copied.
+
+    A literal here would only ever agree with itself; the test has to fast-forward
+    past whatever the page actually waits.
+    """
+    source = (CLIENT_DIR / "js" / "wall.js").read_text(encoding="utf-8")
+    match = re.search(r"WRITE_TIMEOUT_MS\s*=\s*([0-9_]+)", source)
+    assert match is not None, "wall.js no longer declares a write timeout"
+    return int(match.group(1).replace("_", ""))
 
 
 # ---------------------------------------------------------------- the wall itself
@@ -374,3 +397,105 @@ def test_a_failed_write_leaves_the_items_on_the_wall_and_says_so(page, wall, cor
     assert tile(page, "scan-a-p000-i000").count() == 1
     assert tile(page, "scan-a-p000-i001").count() == 1
     assert status(page, "remaining") == len(corpus.items)
+
+
+def test_only_the_failing_pdf_s_items_come_back_when_a_batch_spans_two_books(page, wall, corpus):
+    """One keystroke over two books is two writes, and one can land while the other
+    does not. A correction already on disk that reappears as unfiled is the worst
+    shape of this failure: the person files it a second time, believing the first
+    keystroke was lost.
+    """
+    manifest = wall.get_json("/api/corpus")
+    order = [record["item_id"] for record in manifest["items"]]
+    open_wall(page, wall.url)
+    # Only scan-b's file is broken, and only after the manifest loaded: the same
+    # mid-sitting hand edit the server's own partial-failure test uses.
+    corpus.corrections_file("scan-b").write_text("{ not json", encoding="utf-8")
+
+    # The first three of the wall span both books.
+    file_as(page, order[:3], "accessory")
+
+    message = page.locator("[data-wall-region='message']")
+    message.wait_for()
+    assert message.get_attribute("data-wall-failed") == "write"
+    assert [record["source_pdf"] for record in manifest["items"][:3]] == ["scan-a", "scan-a", "scan-b"]
+    assert tile(page, order[0]).count() == 0
+    assert tile(page, order[1]).count() == 0
+    assert tile(page, order[2]).count() == 1
+    assert status(page, "remaining") == len(corpus.items) - 2
+    assert len(read_corrections(corpus.corrections_file("scan-a"))) == 2
+
+
+def test_a_failed_write_does_not_put_back_a_verdict_a_newer_one_replaced(page, wall, corpus, held_write):
+    """A revert is only ever right for the verdict its own batch applied.
+
+    Re-filing an item from the filed panel while its first batch is still in flight
+    leaves two entries for the one item. If the first one's failure restored what
+    it saw at keystroke time, it would overwrite the verdict the person chose
+    second — and that one is already on disk.
+    """
+    open_wall(page, wall.url)
+
+    file_as(page, ["scan-a-p000-i000"], "hat")
+    held_write.wait_until_in_flight()
+
+    # In flight means the queue cannot fold the second verdict into the first
+    # batch, so the two really are separate writes.
+    page.keyboard.press(legend(page)["filed"])
+    page.locator("[data-wall-region='filed'] [data-wall-item='scan-a-p000-i000']").click()
+    page.keyboard.press(legend(page)["shoes"])
+
+    held_write.release(error=CorrectionError("the corrections file could not be written"))
+    wait_for_flush(page)
+
+    assert filed_categories(corpus, "scan-a") == ["shoes"]
+    # The page has to agree with that: back on the wall would be an item the person
+    # files again over a correction already written.
+    assert tile(page, "scan-a-p000-i000").count() == 0
+    assert status(page, "filed") == 1
+    filed_view = page.locator("[data-wall-region='filed']")
+    assert filed_view.locator("[data-wall-bucket='shoes'] [data-wall-item='scan-a-p000-i000']").count() == 1
+
+
+def test_a_write_that_never_answers_gives_up_rather_than_stalling_the_queue(page, wall, corpus, held_write):
+    """The queue is one chain, so a request that hangs rather than erroring strands
+    every batch behind it — with the items already gone from the wall and nothing
+    said. The give-up has to reach the same revert a network error does.
+    """
+    page.clock.install()
+    open_wall(page, wall.url)
+
+    file_as(page, ["scan-a-p000-i000"], "top")
+    # Past the batch interval, so the request is made rather than still waiting.
+    page.clock.fast_forward(5_000)
+    held_write.wait_until_in_flight()
+
+    page.clock.fast_forward(write_timeout_ms() + 5_000)
+
+    message = page.locator("[data-wall-region='message']")
+    message.wait_for()
+    assert message.get_attribute("data-wall-failed") == "write"
+    assert tile(page, "scan-a-p000-i000").count() == 1
+    assert status(page, "remaining") == len(corpus.items)
+
+
+def test_a_shift_click_after_an_undo_runs_from_the_item_that_was_clicked(page, wall, corpus):
+    """The anchor is an item, not a place. `state.wall` is rebuilt from what is
+    filed, so an undo puts items back and every index behind them moves; an anchor
+    remembered as an index would quietly run the next shift-click from whatever
+    item had slid into that slot, and file the wrong ones.
+    """
+    manifest = wall.get_json("/api/corpus")
+    order = [record["item_id"] for record in manifest["items"]]
+    open_wall(page, wall.url)
+
+    file_as(page, order[:1], "hat")
+    wait_for_flush(page)
+    # Second on the wall as it now stands; third once the undo restores the first.
+    click_tile(page, order[2])
+    page.keyboard.press(legend(page)["undo"])
+    wait_for_flush(page)
+
+    click_tile(page, order[3], shift=True)
+
+    assert selected_items(page) == [order[2], order[3]]

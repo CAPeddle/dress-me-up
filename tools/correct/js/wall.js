@@ -13,6 +13,18 @@ import { WallError, buildKeyMap, createQueue } from "./filing.js";
 const MANIFEST_URL = "/api/corpus";
 const CORRECTIONS_URL = "/api/corrections";
 
+// How long a write may go unanswered before the page gives up on it. A `fetch`
+// with no signal waits forever, and the queue is one serialized chain: a request
+// that wedges rather than erroring never rejects, so nothing reverts, nothing is
+// said, and every later batch waits behind it — with all of those items already
+// gone from the wall. Twenty seconds is many times a loopback write of a dozen
+// records and still short enough that the person is at the desk to see it.
+const WRITE_TIMEOUT_MS = 20_000;
+// A timeout is not a refusal: the server may well have written before it stopped
+// answering, so this says what is actually known rather than promising nothing
+// landed.
+const TIMEOUT_MESSAGE = "the server did not answer in time; those filings may not have been written";
+
 // Tile geometry, owned here and handed to the stylesheet, because the window
 // arithmetic needs the same numbers the layout uses and two copies would drift.
 const TILE_W = 152;
@@ -38,10 +50,14 @@ const state = {
   filed: new Map(),     // item_id -> {category, rejection}: the verdict now believed
   wall: [],             // the unfiled items, derived from `filed` on every change
   selected: new Set(),
-  anchor: -1,           // index into `wall` a shift-click runs from
+  // Both anchors are item ids, not positions: `wall` is rebuilt from `filed` on
+  // every change and an undo puts items back into the middle of it, so a remembered
+  // index would come to name a different item and a shift-click would file the
+  // wrong run.
+  anchor: null,         // the item on the wall a shift-click runs from
   focus: null,          // the item an enlarge would show
   picked: new Set(),    // the selection inside the filed view
-  pickedAnchor: -1,
+  pickedAnchor: null,
   undos: [],            // one entry per filing action: what each item was before
   failure: null,        // a write the person has not been told about yet
 };
@@ -97,32 +113,50 @@ async function loadCorpus() {
 // ---------------------------------------------------------------- the one write
 
 async function postFilings(payload) {
-  let response;
+  // The abort is what turns a hang into a failure the queue already knows how to
+  // handle: it surfaces as a rejected fetch, so it lands in the same WallError
+  // path a dead server does and the batch is reverted and reported identically.
+  const controller = new AbortController();
+  const giveUp = setTimeout(() => controller.abort(), WRITE_TIMEOUT_MS);
   try {
-    response = await fetch(CORRECTIONS_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      // Keepalive, because the tab going into the background flushes through here:
-      // the answer is still wanted, and the request has to outlive a tab the
-      // platform then decides to freeze. A batch is a dozen short records, far
-      // under the size a keepalive request is allowed.
-      keepalive: true,
-    });
-  } catch (error) {
-    throw new WallError("the server could not be reached; nothing was filed");
+    let response;
+    try {
+      response = await fetch(CORRECTIONS_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        // Keepalive, because the tab going into the background flushes through here:
+        // the answer is still wanted, and the request has to outlive a tab the
+        // platform then decides to freeze. A batch is a dozen short records, far
+        // under the size a keepalive request is allowed.
+        keepalive: true,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      throw new WallError(
+        controller.signal.aborted
+          ? TIMEOUT_MESSAGE
+          : "the server could not be reached; nothing was filed",
+      );
+    }
+    let body = null;
+    try {
+      body = await response.json();
+    } catch (error) {
+      // A body that stops arriving part way through is the same wedge as a header
+      // that never arrives, and it must not fall through to the `ok` branch below:
+      // that would report a timeout as a clean write of the whole batch.
+      if (controller.signal.aborted) throw new WallError(TIMEOUT_MESSAGE);
+      body = null;
+    }
+    if (response.ok) return body || { written: [], failed: [] };
+    // A 500 names the books that did not land and the ones that did, so it is an
+    // answer rather than an error. Everything else refused the whole batch.
+    if (body && Array.isArray(body.failed) && body.failed.length) return body;
+    throw new WallError((body && body.error) || `the write was refused (${response.status})`);
+  } finally {
+    clearTimeout(giveUp);
   }
-  let body = null;
-  try {
-    body = await response.json();
-  } catch (error) {
-    body = null;
-  }
-  if (response.ok) return body || { written: [], failed: [] };
-  // A 500 names the books that did not land and the ones that did, so it is an
-  // answer rather than an error. Everything else refused the whole batch.
-  if (body && Array.isArray(body.failed) && body.failed.length) return body;
-  throw new WallError((body && body.error) || `the write was refused (${response.status})`);
 }
 
 function beaconFilings(payload) {
@@ -239,12 +273,16 @@ function renderWindow() {
 function selectOnWall(itemId, extend) {
   const index = state.wall.findIndex((item) => item.item_id === itemId);
   if (index < 0) return;
-  if (extend && state.anchor >= 0 && state.anchor < state.wall.length) {
-    const [from, to] = state.anchor <= index ? [state.anchor, index] : [index, state.anchor];
+  // Resolved now, not when it was set: an anchor whose item has since been filed is
+  // no run at all, and starting one from wherever it used to sit would file items
+  // nobody pointed at.
+  const anchor = state.wall.findIndex((item) => item.item_id === state.anchor);
+  if (extend && anchor >= 0) {
+    const [from, to] = anchor <= index ? [anchor, index] : [index, anchor];
     state.selected = new Set(state.wall.slice(from, to + 1).map((item) => item.item_id));
   } else {
     state.selected = new Set([itemId]);
-    state.anchor = index;
+    state.anchor = itemId;
   }
   state.focus = itemId;
   state.picked.clear();
@@ -256,12 +294,15 @@ function selectInFiled(itemId, extend) {
   const order = filedOrder();
   const index = order.indexOf(itemId);
   if (index < 0) return;
-  if (extend && state.pickedAnchor >= 0 && state.pickedAnchor < order.length) {
-    const [from, to] = state.pickedAnchor <= index ? [state.pickedAnchor, index] : [index, state.pickedAnchor];
+  // The same resolution as the wall's, and needed for the same reason: re-filing an
+  // item moves it between buckets, so the flat order this runs along is rebuilt too.
+  const anchor = order.indexOf(state.pickedAnchor);
+  if (extend && anchor >= 0) {
+    const [from, to] = anchor <= index ? [anchor, index] : [index, anchor];
     state.picked = new Set(order.slice(from, to + 1));
   } else {
     state.picked = new Set([itemId]);
-    state.pickedAnchor = index;
+    state.pickedAnchor = itemId;
   }
   state.focus = itemId;
   state.selected.clear();
@@ -283,7 +324,11 @@ function paintFiledSelection() {
 
 // ---------------------------------------------------------------- filing
 
-function entryFor(itemId, filing, previous) {
+// `applied` is the verdict this entry put into `state.filed`, `previous` what was
+// there before it. Both are needed because an item can be filed again while its
+// first batch is still in flight — from the filed panel, which is exactly what
+// that panel is for — and then two entries are carrying reverts for one item.
+function entryFor(itemId, filing, previous, applied) {
   const item = state.byId.get(itemId);
   return {
     item_id: itemId,
@@ -292,7 +337,16 @@ function entryFor(itemId, filing, previous) {
     // What the page has to go back to when the server refuses. An undo of a
     // reverted filing is then a no-op on both the page and the file, which is the
     // right answer rather than a second thing to explain.
+    //
+    // Compare-and-swap rather than a plain restore: only the entry whose verdict is
+    // still the one standing has anything to undo. A revert that fired regardless
+    // would put a stale verdict back over the newer one the person chose — and that
+    // newer one is on its way to disk, so the page would then disagree with the file
+    // and the item would be filed a second time. Identity is the comparison because
+    // every filing stores a freshly built verdict object, so no two entries can
+    // ever be holding the same one.
     revert: () => {
+      if ((state.filed.get(itemId) || null) !== applied) return;
       if (previous === null) state.filed.delete(itemId);
       else state.filed.set(itemId, previous);
     },
@@ -310,8 +364,9 @@ function fileSelection(action) {
   for (const id of ids) {
     const previous = state.filed.get(id) || null;
     undo.push({ item_id: id, previous });
-    state.filed.set(id, { category: verdict.category || null, rejection: verdict.rejection || null });
-    entries.push(entryFor(id, { item_id: id, ...verdict }, previous));
+    const applied = { category: verdict.category || null, rejection: verdict.rejection || null };
+    state.filed.set(id, applied);
+    entries.push(entryFor(id, { item_id: id, ...verdict }, previous, applied));
   }
   state.undos.push(undo);
   // The enlarge is opened to judge one item; once that judgement is filed it is
@@ -320,7 +375,7 @@ function fileSelection(action) {
   if (fromFiled) state.picked.clear();
   else {
     state.selected.clear();
-    state.anchor = -1;
+    state.anchor = null;
   }
   refresh();
   queue.add(entries);
@@ -344,7 +399,9 @@ function undoLast() {
             item_id: itemId,
             ...(previous.category === null ? { rejection: previous.rejection } : { category: previous.category }),
           };
-    entries.push(entryFor(itemId, filing, current));
+    // The undo applies `previous` and would go back to `current`, the mirror of the
+    // filing it is undoing.
+    entries.push(entryFor(itemId, filing, current, previous));
   }
   refresh();
   queue.add(entries);
@@ -373,7 +430,10 @@ function paintStatus() {
 
 function paintMessage() {
   if (state.failure !== null) {
-    messageEl.textContent = `Not filed: ${state.failure}. Those items are back on the wall.`;
+    // Deliberately does not promise the items are back on the wall. A revert is
+    // a no-op for any item that has since been filed again, so the claim was
+    // sometimes false — and it was the part a person would act on.
+    messageEl.textContent = `Not filed: ${state.failure}. Anything still unfiled is back on the wall.`;
     messageEl.dataset.wallFailed = "write";
     delete messageEl.dataset.wallEmpty;
     messageEl.hidden = false;
