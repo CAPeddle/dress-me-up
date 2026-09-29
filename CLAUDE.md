@@ -20,8 +20,9 @@ hashes the absolute path for per-project memory (KTD-17).
 This tree was **rebuilt from the spec in `docs/`** — the original was lost with a
 retired laptop (KTD-15). Consequences that will bite otherwise:
 
-- **The Python pipeline is real and tested.** 48 tests pass, and the full chain
-  has been run end to end on a synthetic PDF.
+- **The Python pipeline is real and tested.** 488 tests pass, including browser
+  tests under Playwright, and the full chain has been run end to end on a
+  synthetic PDF and on the real corpus.
 - **The Kotlin has never been compiled.** It was written on a machine with no JDK
   and no Android SDK. Treat every `.kt` file as unreviewed first-draft code:
   expect import and API-surface errors on the first build. Do not describe the
