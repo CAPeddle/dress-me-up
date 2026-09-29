@@ -22,11 +22,14 @@ from dressup_pipeline.catalog import (
     build_catalog,
     compute_scale,
 )
+from dressup_pipeline.extract import DEFAULT_DPI
 from dressup_pipeline.triage import TRIAGE_DPI, Manifest, PageVerdict, manifest_path
-from conftest import make_doll_page
+from synthetic import make_doll_page
 
-ACCEPTED = dict(category="hat", group="fantasy", quality=0.95, accepted=True)
-AT_72 = dict(ACCEPTED, dpi=72)
+# `correction` is what puts an item in a build at all (R11); the sizes are what
+# these cases are about.
+LABELLED = dict(category="hat", group="fantasy", quality=0.95, accepted=True, correction="hat")
+AT_72 = dict(LABELLED, dpi=72)
 
 
 def scaled(edge: int, decision) -> int:
@@ -110,29 +113,30 @@ def test_the_cli_refuses_a_non_positive_body_height(tmp_path, capsys):
 # -- what lands on disk --------------------------------------------------------
 
 
-def test_the_catalog_dimensions_are_the_written_pngs_dimensions(tmp_path, sidecar_corpus):
+def test_the_catalog_dimensions_are_the_written_pngs_dimensions(tmp_path, sidecar_corpus, corrections_dir):
     root, _ = sidecar_corpus([
-        {"item_id": "wide", **ACCEPTED, "size": (1400, 600)},
-        {"item_id": "tall", **ACCEPTED, "size": (500, 1100)},
+        {"item_id": "wide", **LABELLED, "size": (1400, 600)},
+        {"item_id": "tall", **LABELLED, "size": (500, 1100)},
     ])
     assets = tmp_path / "assets"
 
-    build_catalog(root, assets, min_quality=0.90)
+    build_catalog(root, assets, corrections_dir=corrections_dir)
 
     catalog = json.loads((assets / "catalog.json").read_text())
+    assert len(catalog["items"]) == 2
     for item in catalog["items"]:
         with Image.open(assets / item["image"]) as png:
             assert png.size == (item["width"], item["height"]), item["id"]
 
 
-def test_no_written_item_exceeds_the_item_ceiling(tmp_path, sidecar_corpus):
+def test_no_written_item_exceeds_the_item_ceiling(tmp_path, sidecar_corpus, corrections_dir):
     root, _ = sidecar_corpus([
-        {"item_id": "huge", **ACCEPTED, "size": (3000, 1000)},
-        {"item_id": "small", **ACCEPTED, "size": (200, 160)},
+        {"item_id": "huge", **LABELLED, "size": (3000, 1000)},
+        {"item_id": "small", **LABELLED, "size": (200, 160)},
     ])
     assets = tmp_path / "assets"
 
-    build_catalog(root, assets, min_quality=0.90)
+    build_catalog(root, assets, corrections_dir=corrections_dir)
 
     catalog = json.loads((assets / "catalog.json").read_text())
     # The factor is truncated to 4 dp, so the largest Item reaches the ceiling to
@@ -144,15 +148,15 @@ def test_no_written_item_exceeds_the_item_ceiling(tmp_path, sidecar_corpus):
     assert small["width"] < 200
 
 
-def test_an_item_one_pixel_across_survives_a_small_factor(tmp_path, sidecar_corpus):
+def test_an_item_one_pixel_across_survives_a_small_factor(tmp_path, sidecar_corpus, corrections_dir):
     root, _ = sidecar_corpus([
-        {"item_id": "huge", **ACCEPTED, "size": (3000, 1000)},
-        {"item_id": "tiny", **ACCEPTED},
+        {"item_id": "huge", **LABELLED, "size": (3000, 1000)},
+        {"item_id": "tiny", **LABELLED},
     ])
     Image.new("RGBA", (1, 1), (200, 60, 90, 255)).save(root / "tiny.png")
     assets = tmp_path / "assets"
 
-    build_catalog(root, assets, min_quality=0.90)
+    build_catalog(root, assets, corrections_dir=corrections_dir)
 
     tiny = next(i for i in json.loads((assets / "catalog.json").read_text())["items"] if i["id"] == "tiny")
     assert (tiny["width"], tiny["height"]) == (1, 1)
@@ -160,17 +164,17 @@ def test_an_item_one_pixel_across_survives_a_small_factor(tmp_path, sidecar_corp
         assert png.size == (1, 1)
 
 
-def test_the_scale_block_is_written_into_the_catalog(tmp_path, sidecar_corpus):
-    root, _ = sidecar_corpus([{"item_id": "a", **ACCEPTED, "size": (1024, 800)}])
+def test_the_scale_block_is_written_into_the_catalog(tmp_path, sidecar_corpus, corrections_dir):
+    root, _ = sidecar_corpus([{"item_id": "a", **LABELLED, "size": (1024, 800)}])
 
-    build_catalog(root, tmp_path / "assets", min_quality=0.90, target_body_height=1000)
+    build_catalog(root, tmp_path / "assets", corrections_dir=corrections_dir, target_body_height=1000)
 
     scale = json.loads((tmp_path / "assets" / "catalog.json").read_text())["scale"]
     assert set(scale) == {"target_body_height_px", "factor", "source_dpi", "bound", "item_ceiling_px"}
     assert scale == {
         "target_body_height_px": 1000,
         "factor": 0.5,
-        "source_dpi": 0,
+        "source_dpi": DEFAULT_DPI,
         "bound": "item_ceiling",
         "item_ceiling_px": ITEM_CEILING_PX,
     }
@@ -202,32 +206,33 @@ def body_book(tmp_path):
     return dict(source=tmp_path / "source", triage=triage, listing=listing)
 
 
-def build_with_bodies(root, assets, body_book, **kwargs):
+def build_with_bodies(root, assets, corrections_dir, body_book, **kwargs):
     return build_catalog(
-        root, assets, min_quality=0.90,
+        root, assets, corrections_dir=corrections_dir,
         bodies=BodiesSource(body_book["listing"], body_book["source"], body_book["triage"]),
         **kwargs,
     )
 
 
-def test_both_files_carry_the_same_build_id_and_scale_block(tmp_path, sidecar_corpus, body_book):
+def test_both_files_carry_the_same_build_id_and_scale_block(tmp_path, sidecar_corpus, corrections_dir, body_book):
     root, _ = sidecar_corpus([{"item_id": "a", **AT_72}])
     assets = tmp_path / "assets"
 
-    build_with_bodies(root, assets, body_book)
+    build_with_bodies(root, assets, corrections_dir, body_book)
 
     catalog = json.loads((assets / "catalog.json").read_text())
     bodies = json.loads((assets / "bodies.json").read_text())
+    assert len(catalog["items"]) == 1
     assert catalog["build_id"] == bodies["build_id"]
     assert catalog["scale"] == bodies["scale"]
     assert catalog["scale"]["source_dpi"] == 72
 
 
-def test_one_factor_governs_the_bodies_and_the_items(tmp_path, sidecar_corpus, body_book):
+def test_one_factor_governs_the_bodies_and_the_items(tmp_path, sidecar_corpus, corrections_dir, body_book):
     root, _ = sidecar_corpus([{"item_id": "a", **AT_72, "size": (300, 400)}])
     assets = tmp_path / "assets"
 
-    summary = build_with_bodies(root, assets, body_book, target_body_height=300)
+    summary = build_with_bodies(root, assets, corrections_dir, body_book, target_body_height=300)
 
     catalog = json.loads((assets / "catalog.json").read_text())
     body = json.loads((assets / "bodies.json").read_text())["bodies"][0]
@@ -243,13 +248,13 @@ def test_one_factor_governs_the_bodies_and_the_items(tmp_path, sidecar_corpus, b
     assert summary.scale.factor == factor
 
 
-def test_the_report_tables_each_source_pdf_and_names_the_bound(tmp_path, sidecar_corpus, body_book):
+def test_the_report_tables_each_source_pdf_and_names_the_bound(tmp_path, sidecar_corpus, corrections_dir, body_book):
     root, _ = sidecar_corpus([
         {"item_id": "a", **AT_72, "source_pdf": "items.pdf", "size": (300, 400)},
         {"item_id": "b", **AT_72, "source_pdf": "items.pdf", "size": (300, 200)},
     ])
 
-    summary = build_with_bodies(root, tmp_path / "assets", body_book, target_body_height=300)
+    summary = build_with_bodies(root, tmp_path / "assets", corrections_dir, body_book, target_body_height=300)
 
     report = summary.as_report()
     assert "items.pdf" in report and "book.pdf" in report

@@ -24,7 +24,7 @@ from dressup_pipeline.triage import (
     rotate_page,
     triage_pdf,
 )
-from conftest import make_border_doll_page
+from synthetic import make_border_doll_page
 
 TOOLS = Path(__file__).resolve().parents[1]
 

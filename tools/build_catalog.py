@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""Aggregate accepted sidecars into the app's catalog.json + item PNGs.
+"""Aggregate the items a person has labelled into the app's catalog.json + item PNGs.
 
-    python tools/build_catalog.py --min-quality 0.90 --group fantasy --group knight
+    python tools/build_catalog.py --group fantasy --group knight
+
+Only items carrying a human category under tools/corrections/ are written, and
+each is written under that category — the classifier's suggestion on the sidecar
+is never the catalogue's answer, and neither is QA's verdict. An un-corrected
+corpus therefore builds an empty catalog, and the report names what is missing.
 
 Writes into app/src/main/assets/ by default — the only directory the app reads.
 When tools/base_bodies.json lists any bodies (or --bodies names another list),
@@ -26,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from dressup_pipeline.bodies import BodyError, load_body_list, resolve_pdf
 from dressup_pipeline.catalog import DEFAULT_BODY_HEIGHT_PX, BodiesSource, build_catalog
+from dressup_pipeline.corrections import DEFAULT_CORRECTIONS_DIR, CorrectionError
 from dressup_pipeline.models import GROUPS
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -69,7 +75,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--sidecars", type=Path, default=DEFAULT_SIDECARS, help="sidecar root (default: content/sidecars)")
     parser.add_argument("--assets", type=Path, default=DEFAULT_ASSETS, help="asset output dir (default: app/src/main/assets)")
-    parser.add_argument("--min-quality", type=float, default=0.90, help="reject items scoring below this (default: 0.90)")
+    parser.add_argument("--min-quality", type=float, default=0.90, help="advisory only: the threshold the report measures QA's score against. It no longer decides what is in the catalog — a human label does (default: 0.90)")
+    parser.add_argument("--corrections", type=Path, default=DEFAULT_CORRECTIONS_DIR, help=f"directory of human labels, one file per source PDF (default: {DEFAULT_CORRECTIONS_DIR})")
     parser.add_argument("--group", action="append", choices=GROUPS, dest="groups", help="restrict to a group; repeatable")
     parser.add_argument("--body-height", type=int, default=DEFAULT_BODY_HEIGHT_PX, help=f"height the tallest Base Body is scaled to, in px (default: {DEFAULT_BODY_HEIGHT_PX})")
     parser.add_argument("--bodies", type=Path, default=None, help="base body list (default: tools/base_bodies.json when it lists any)")
@@ -103,14 +110,23 @@ def main(argv: list[str] | None = None) -> int:
             groups=set(args.groups) if args.groups else None,
             target_body_height=args.body_height,
             bodies=None if bodies_list is None else BodiesSource(bodies_list, args.source, args.triage),
+            corrections_dir=args.corrections,
         )
-    except BodyError as exc:
+    except (BodyError, CorrectionError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(summary.as_report())
 
     if summary.written == 0:
-        print("\nno items written — the app will start with an empty catalog", file=sys.stderr)
+        # Not a failure of the build so much as of the labelling: an un-corrected
+        # corpus is the ordinary state of one nobody has been through yet. Still
+        # non-zero, because an empty catalog is never what the caller wanted.
+        print(
+            f"\nno items written — nothing under {args.corrections} carries a human label for these "
+            "sidecars, and the catalog accepts no other kind; the app would start with an empty "
+            "catalog. Label the items with the correction tool and build again.",
+            file=sys.stderr,
+        )
         return 1
     return 0
 

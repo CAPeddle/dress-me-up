@@ -27,7 +27,7 @@ from dressup_pipeline.extract import DEFAULT_DPI, render_page
 from dressup_pipeline.models import BBox
 from dressup_pipeline.orientation import DETAIL_WINDOW, find_figure_regions
 from dressup_pipeline.triage import TRIAGE_DPI, Manifest, PageVerdict, manifest_path
-from conftest import make_doll_page
+from synthetic import make_doll_page
 
 ONE_DOLL = (260, 60, 340, 760)
 LEFT_DOLL = (170, 60, 250, 760)

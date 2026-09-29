@@ -6,7 +6,10 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from dressup_pipeline.corrections import Correction, corrections_path, write_corrections
+from dressup_pipeline.extract import DEFAULT_DPI
 from dressup_pipeline.models import BBox, Sidecar, SIDECAR_SUFFIX
+from synthetic import make_item_image
 
 
 @pytest.fixture
@@ -20,94 +23,56 @@ def page_with_stickers():
     return page
 
 
-def make_item_image(width=300, height=400, alpha=255, margin=40):
-    """An RGBA cutout: transparent margin around a solid, fully opaque body."""
-    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    draw.rectangle([margin, margin, width - margin, height - margin], fill=(180, 60, 90, alpha))
-    return image
+def corrections_root(tmp_path):
+    """Where the catalogue tests' corrections live: one directory per test.
 
-
-def make_border_doll_page():
-    """The orientation tests' doll page: a figure between two bleeding border strips.
-
-    Head-heavy and shoulder-wide on purpose. Shared with the triage tests so that
-    the page both stages are pinned against is literally the same one.
+    Named here rather than in each test so the `sidecar_corpus` fixture and the
+    build under test cannot drift apart on which directory holds the labelling.
     """
-    page = Image.new("RGB", (660, 700), "white")
-    draw = ImageDraw.Draw(page)
-    draw.rectangle([0, 0, 90, 700], fill=(60, 110, 70))      # decoration, off the left edge
-    draw.rectangle([570, 0, 660, 700], fill=(70, 90, 140))   # decoration, off the right edge
-    draw.rectangle([325, 130, 365, 350], fill=(226, 188, 160))   # torso
-    draw.rectangle([300, 150, 390, 195], fill=(226, 188, 160))   # outstretched arms — widest
-    draw.rectangle([328, 350, 342, 660], fill=(226, 188, 160))   # legs
-    draw.rectangle([348, 350, 362, 660], fill=(226, 188, 160))
-    draw.ellipse([320, 40, 370, 140], fill=(45, 30, 25))         # head — darkest
-    return page
+    path = tmp_path / "corrections"
+    path.mkdir(exist_ok=True)
+    return path
 
 
-def make_doll_page(size=(600, 800), dolls=((260, 60, 340, 760),), border=True):
-    """A base-body page the way the scans are: dolls on a smooth colour wash.
-
-    Each doll is (left, top, right, bottom) in pixels and is drawn the way the
-    books print them: a filled, dark-outlined line figure -- head, torso,
-    outstretched arms, two legs -- so it is tall, floats clear of the side edges
-    and has the anatomy the orientation gates expect. The wash is a vertical
-    gradient whose luminance sits within a few levels of the skin tone, so only
-    the outlines separate doll from background, exactly as on the scans; a
-    border strip runs off the left edge like the printed pages.
-    """
-    width, height = size
-    page = Image.new("RGB", size)
-    pixels = page.load()
-    for y in range(height):
-        t = y / max(1, height - 1)
-        pixels_row = (int(205 - 30 * t), int(190 - 25 * t), int(225 - 20 * t))
-        for x in range(width):
-            pixels[x, y] = pixels_row
-    draw = ImageDraw.Draw(page)
-    if border:
-        draw.rectangle([0, 0, int(width * 0.08), height], fill=(60, 110, 70))
-    for left, top, right, bottom in dolls:
-        w, h = right - left, bottom - top
-        cx = (left + right) // 2
-        skin = (226, 188, 160)
-        line = dict(outline=(40, 30, 30), width=2)
-        head_h = int(h * 0.14)
-        torso_top = top + head_h - 2
-        torso_bottom = top + int(h * 0.5)
-        half = int(w * 0.25)
-        draw.rectangle([cx - half, torso_top, cx + half, torso_bottom], fill=skin, **line)
-        arm_top = torso_top + int(h * 0.03)
-        draw.rectangle([left, arm_top, right - 1, arm_top + int(h * 0.07)], fill=skin, **line)
-        leg_w = max(4, int(w * 0.1))
-        draw.rectangle([cx - half, torso_bottom, cx - half + leg_w, bottom - 1], fill=skin, **line)
-        draw.rectangle([cx + half - leg_w, torso_bottom, cx + half, bottom - 1], fill=skin, **line)
-        draw.ellipse([cx - int(w * 0.3), top, cx + int(w * 0.3), top + head_h], fill=(45, 30, 25), **line)
-    return page
+@pytest.fixture
+def corrections_dir(tmp_path):
+    return corrections_root(tmp_path)
 
 
 @pytest.fixture
 def sidecar_corpus(tmp_path):
-    """Build a small on-disk corpus and return (root, {item_id: Sidecar})."""
+    """Build a small on-disk corpus and return (root, {item_id: Sidecar}).
+
+    A spec's `correction` names the category a person filed the item under and
+    `rejection` the kind they rejected it as; either writes a real corrections
+    file beside the corpus, which is the only thing the catalogue build accepts.
+    Specs carrying neither stand for items nobody has ruled on yet.
+    """
 
     def _build(specs):
         root = tmp_path / "sidecars"
         root.mkdir(exist_ok=True)
+        corrections_dir = corrections_root(tmp_path)
         built = {}
-        for spec in specs:
+        filed = {}
+        for index, spec in enumerate(specs):
             item_id = spec["item_id"]
             image_name = f"{item_id}.png"
-            make_item_image(*spec.get("size", (300, 400))).save(root / image_name)
+            size = spec.get("size", (300, 400))
+            make_item_image(*size).save(root / image_name)
             sidecar = Sidecar(
                 item_id=item_id,
                 source_pdf=spec.get("source_pdf", "fantasy-book-1.pdf"),
                 page=spec.get("page", 0),
-                bbox=BBox(0, 0, *spec.get("size", (300, 400))),
+                # Its own box per spec, offset by position unless one is given: a
+                # correction is matched on geometry (KTD2), so one shared origin
+                # made every same-sized item a single identity and no test could
+                # label one of them and leave its neighbour alone.
+                bbox=spec.get("bbox", BBox(index, index, *size)),
                 image=image_name,
                 page_width=spec.get("page_size", (2480, 3508))[0],
                 page_height=spec.get("page_size", (2480, 3508))[1],
-                dpi=spec.get("dpi", 0),
+                dpi=spec.get("dpi", DEFAULT_DPI),
                 category=spec.get("category"),
                 group=spec.get("group"),
                 quality=spec.get("quality"),
@@ -115,6 +80,13 @@ def sidecar_corpus(tmp_path):
             )
             sidecar.write(root / f"{item_id}{SIDECAR_SUFFIX}")
             built[item_id] = sidecar
+            if spec.get("correction") or spec.get("rejection"):
+                correction = Correction.for_sidecar(
+                    sidecar, category=spec.get("correction"), rejection=spec.get("rejection")
+                )
+                filed.setdefault(sidecar.source_pdf, []).append(correction)
+        for source_pdf, corrections in filed.items():
+            write_corrections(corrections_path(corrections_dir, source_pdf), corrections)
         return root, built
 
     return _build

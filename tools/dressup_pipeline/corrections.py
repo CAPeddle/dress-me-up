@@ -32,6 +32,7 @@ its README.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -289,10 +290,42 @@ def write_corrections(path: Path, corrections: Iterable[Correction]) -> None:
     Sorted because these files are tracked and rewritten every labelling pass:
     insertion order would make each pass a whole-file diff and bury the one
     verdict that changed.
+
+    Written beside the target and moved into place, rather than over it. This file
+    is the only durable copy of judgement nothing can derive again — the reason it
+    is tracked at all — and a write that dies partway through would otherwise
+    leave a truncated file where a whole book's labelling was. The move is atomic
+    on the same filesystem, so a reader sees the old file or the new one.
     """
     records = sorted(corrections, key=lambda correction: correction.key)
     payload = {"corrections": [correction.to_dict() for correction in records]}
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    try:
+        os.replace(temp, path)
+    except OSError:
+        temp.unlink(missing_ok=True)
+        raise
+
+
+def load_corrections(corrections_dir: Path) -> dict[CorrectionKey, Correction]:
+    """Every filed verdict under one directory, in one mapping.
+
+    Loaded whole before a single sidecar is read, rather than per PDF as the walk
+    reaches one. A lookup keyed on the stems the corpus happens to contain would
+    never open the file of a PDF whose cutouts have all moved or vanished, so a
+    whole pass of labelling could go unreported — the opposite of what R9 asks
+    for. The stem is part of every key, so the files merge without collision.
+
+    A directory that is not there yet holds no corrections and is not an error:
+    a corpus nobody has labelled builds empty and says so.
+    """
+    corrections: dict[CorrectionKey, Correction] = {}
+    if not corrections_dir.is_dir():
+        return corrections
+    for path in sorted(corrections_dir.glob(f"*{CORRECTIONS_SUFFIX}")):
+        corrections.update(read_corrections(path))
+    return corrections
 
 
 def effective_category(

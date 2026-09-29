@@ -10,6 +10,7 @@ judgement, one silently and one loudly.
 """
 
 import json
+import os
 
 import pytest
 
@@ -387,3 +388,25 @@ def test_re_running_classify_leaves_the_correction_file_byte_identical(tmp_path)
 
     corrections = read_corrections(path)
     assert effective_category(corrections, Sidecar.read(sidecar_path)) == "bottom"
+
+
+def test_a_failed_write_leaves_the_previous_labelling_intact(tmp_path, monkeypatch):
+    """The file is replaced, never truncated in place.
+
+    It holds the one durable copy of judgement nothing can derive again — the
+    reason these files are tracked at all — so a write that dies partway must
+    leave the last good version where it was rather than a half-file.
+    """
+    path = corrections_path(tmp_path, "set.pdf")
+    write_corrections(path, [_correction(source_pdf="set", category="hat")])
+    before = path.read_bytes()
+
+    def explode(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", explode)
+    with pytest.raises(OSError):
+        write_corrections(path, [_correction(source_pdf="set", category="top")])
+
+    assert path.read_bytes() == before
+    assert list(tmp_path.glob("*.tmp")) == []

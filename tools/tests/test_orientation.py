@@ -20,7 +20,7 @@ from dressup_pipeline.orientation import (
     measure_orientation,
 )
 from dressup_pipeline.triage import rotate_page
-from conftest import make_border_doll_page
+from synthetic import make_border_doll_page
 
 CONTENT = Path(__file__).resolve().parents[2] / "content" / "source"
 SIDEWAYS_PDF = CONTENT / "Fantasy" / "20260515170658.pdf"

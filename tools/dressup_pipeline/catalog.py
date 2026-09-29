@@ -4,6 +4,15 @@ This is the pipeline/app contract. `catalog.json` and the scaled PNGs beside it
 are the only things the app ever sees; everything upstream is working material
 that stays out of the APK.
 
+**Human labels are the only labels** (R11). The catalogue takes an item's
+category from a correction under `tools/corrections/`, never from the
+classifier's suggestion on the sidecar, and an item nobody has ruled on stays
+out. QA still writes `quality`, `accepted` and `notes` and nothing here
+overwrites them, but they no longer gate: every rejection in this corpus is for
+being small, and a hair clip is legitimately small. What QA would have excluded
+is reported instead of applied, so the override is visible rather than silent
+(R12).
+
 Given a body list, the same build also writes `bodies.json` and `bodies/<id>.png`
 (KTD3). Both files carry one `build_id` and one `scale` block, so a reader can
 tell that its bodies and its items came out of the same run rather than from two
@@ -33,6 +42,13 @@ from pathlib import Path
 from PIL import Image
 
 from .bodies import BodyCut, BodyError, build_bodies, load_body_list, shared_dpi
+from .corrections import (
+    DEFAULT_CORRECTIONS_DIR,
+    Correction,
+    CorrectionKey,
+    load_corrections,
+    sidecar_key,
+)
 from .models import CatalogItem, Sidecar, iter_sidecars
 
 CATALOG_VERSION = 1
@@ -54,6 +70,11 @@ DEFAULT_BODY_HEIGHT_PX = 1000
 # can hold — and truncated rather than rounded, so what is written is exactly
 # what was applied and can never push the largest Item past the ceiling.
 FACTOR_PLACES = 4
+
+# How many unmatched corrections the report names one by one. Enough to act on a
+# handful without burying the rest of the report when a whole book has moved; the
+# count above the list is the number that matters.
+_UNMATCHED_SHOWN = 10
 
 
 @dataclass(frozen=True)
@@ -146,6 +167,13 @@ class BuildSummary:
     scale: ScaleDecision | None = None
     tallest_body: int = 0
     largest_item_edge: int = 0
+    # Items in the catalogue that QA's own gate would have turned away. Counted
+    # so the override QA no longer performs is stated rather than inferred (R12).
+    admitted_over_qa: int = 0
+    # Corrections whose item no extracted cutout matches. Kept and reported: a
+    # re-extraction that moves a cutout must not quietly lose the judgement
+    # somebody spent on it (R9).
+    unmatched: list[Correction] = field(default_factory=list)
 
     def skip(self, reason: str) -> None:
         self.skipped[reason] = self.skipped.get(reason, 0) + 1
@@ -160,12 +188,32 @@ class BuildSummary:
         lines = [f"{self.written} of {self.total} items written", bodies]
         for reason, count in sorted(self.skipped.items(), key=lambda kv: -kv[1]):
             lines.append(f"  skipped {count:>4}  {reason}")
+        lines.append(
+            f"  QA advisory: {self.admitted_over_qa} of the items written would not have passed"
+            " QA's own gate; a human label admitted them"
+        )
+        lines += self._unmatched_lines()
         if self.by_group:
             lines.append("  groups: " + ", ".join(f"{k}={v}" for k, v in sorted(self.by_group.items())))
         if self.by_category:
             lines.append("  categories: " + ", ".join(f"{k}={v}" for k, v in sorted(self.by_category.items())))
         lines += self._table()
         return "\n".join(lines)
+
+    def _unmatched_lines(self) -> list[str]:
+        """Name the corrections nothing matched, and enough of them to act on."""
+        if not self.unmatched:
+            return []
+        lines = [
+            f"  unmatched corrections: {len(self.unmatched)} — no extracted item has this"
+            " geometry; the labelling is kept, re-file it or re-extract"
+        ]
+        shown = sorted(self.unmatched, key=lambda correction: correction.key)
+        for correction in shown[:_UNMATCHED_SHOWN]:
+            lines.append(f"    {correction.describe()}")
+        if len(shown) > _UNMATCHED_SHOWN:
+            lines.append(f"    ... and {len(shown) - _UNMATCHED_SHOWN} more")
+        return lines
 
     def _table(self) -> list[str]:
         """Per source PDF within each book, so one odd scan is visible at build time."""
@@ -206,16 +254,23 @@ def _scaled(image: Image.Image, factor: float) -> Image.Image:
     return rgba.resize(target, Image.LANCZOS)
 
 
-def _eligible(sidecar: Sidecar, min_quality: float, groups: set[str] | None) -> str | None:
-    """Return a skip reason, or None when the item belongs in the catalog."""
+def _eligible(sidecar: Sidecar, correction: Correction | None, groups: set[str] | None) -> str | None:
+    """Return a skip reason, or None when the item belongs in the catalog.
+
+    A person's verdict is the gate (R11). `is_classified` and `is_qa_complete`
+    stay because an item the pipeline never finished is not catalogue material
+    either, and both only ask whether a stage *ran* — neither looks at what QA
+    decided, which is the whole point: a label admits an item whatever QA scored
+    it and whatever it ruled.
+    """
     if not sidecar.is_classified:
         return "not classified"
     if not sidecar.is_qa_complete:
         return "QA not run"
-    if not sidecar.accepted:
-        return "rejected by QA"
-    if sidecar.quality is not None and sidecar.quality < min_quality:
-        return f"below --min-quality {min_quality}"
+    if correction is None:
+        return "no human label"
+    if correction.rejected:
+        return f"rejected by a person: {correction.rejection}"
     if groups and sidecar.group not in groups:
         return "group not selected"
     return None
@@ -239,12 +294,18 @@ class BodiesSource:
 
 @dataclass
 class _Candidate:
-    """An eligible Item, measured but not yet written."""
+    """An eligible Item, measured but not yet written.
+
+    `category` is the person's, read off their correction and carried here rather
+    than written back onto the sidecar: classify owns that field, and a stage that
+    rewrote another stage's field would break the additive rule (KTD-12).
+    """
 
     sidecar: Sidecar
     source_image: Path
     width: int
     height: int
+    category: str
 
     @property
     def longest_edge(self) -> int:
@@ -252,14 +313,27 @@ class _Candidate:
 
 
 def _gather(
-    sidecar_root: Path, min_quality: float, groups: set[str] | None, summary: BuildSummary
+    sidecar_root: Path,
+    corrections: dict[CorrectionKey, Correction],
+    min_quality: float,
+    groups: set[str] | None,
+    summary: BuildSummary,
 ) -> list[_Candidate]:
     """Pass one: which Items are in, and how big they are on the page."""
     candidates: list[_Candidate] = []
+    matched: set[CorrectionKey] = set()
     for path, sidecar in iter_sidecars(sidecar_root):
         summary.total += 1
 
-        reason = _eligible(sidecar, min_quality, groups)
+        key = sidecar_key(sidecar)
+        correction = corrections.get(key)
+        # Matched before eligibility, not after: a correction on an item the
+        # pipeline has not finished classifying still found its item, and calling
+        # it unmatched would send somebody to re-label a cutout that never moved.
+        if correction is not None:
+            matched.add(key)
+
+        reason = _eligible(sidecar, correction, groups)
         if reason:
             summary.skip(reason)
             continue
@@ -272,12 +346,27 @@ def _gather(
             summary.skip("image missing on disk")
             continue
 
-        assert sidecar.category and sidecar.group
-        candidates.append(_Candidate(sidecar, source_image, width, height))
-        summary.by_category[sidecar.category] = summary.by_category.get(sidecar.category, 0) + 1
+        # `_eligible` passing means a person filed this one under a category.
+        assert correction is not None and correction.category and sidecar.group
+        category = correction.category
+        candidates.append(_Candidate(sidecar, source_image, width, height, category))
+        summary.by_category[category] = summary.by_category.get(category, 0) + 1
         summary.by_group[sidecar.group] = summary.by_group.get(sidecar.group, 0) + 1
         summary.row(sidecar.group, sidecar.source_pdf).item_heights.append(height)
+        if _would_qa_exclude(sidecar, min_quality):
+            summary.admitted_over_qa += 1
+
+    summary.unmatched = [
+        correction for key, correction in corrections.items() if key not in matched
+    ]
     return candidates
+
+
+def _would_qa_exclude(sidecar: Sidecar, min_quality: float) -> bool:
+    """Would QA's own gate have turned this item away? Advisory only (R12)."""
+    if not sidecar.accepted:
+        return True
+    return sidecar.quality is not None and sidecar.quality < min_quality
 
 
 def build_catalog(
@@ -287,8 +376,13 @@ def build_catalog(
     groups: set[str] | None = None,
     target_body_height: int = DEFAULT_BODY_HEIGHT_PX,
     bodies: BodiesSource | None = None,
+    corrections_dir: Path = DEFAULT_CORRECTIONS_DIR,
 ) -> BuildSummary:
     """Write `catalog.json` + scaled item PNGs into `assets_dir`.
+
+    Only items a person has filed a category for are written, and each is filed
+    under that category (R11). `min_quality` no longer decides anything: it is
+    the threshold the report measures QA's advisory verdict against.
 
     With `bodies`, also cut the Base Bodies it lists and write `bodies.json` +
     `bodies/<id>.png` beside the catalog. An item group that made it into the
@@ -303,7 +397,7 @@ def build_catalog(
     summary = BuildSummary()
     build_id = new_build_id()
 
-    candidates = _gather(sidecar_root, min_quality, groups, summary)
+    candidates = _gather(sidecar_root, load_corrections(corrections_dir), min_quality, groups, summary)
 
     cuts: list[BodyCut] = []
     source_dpi: int | None = None
@@ -338,11 +432,11 @@ def build_catalog(
             written.save(items_dir / out_name, optimize=True)
             width, height = written.size
 
-        assert sidecar.category and sidecar.group and sidecar.quality is not None
+        assert sidecar.group and sidecar.quality is not None
         catalog_items.append(
             CatalogItem(
                 id=sidecar.item_id,
-                category=sidecar.category,
+                category=candidate.category,
                 group=sidecar.group,
                 image=f"{ITEMS_SUBDIR}/{out_name}",
                 width=width,
