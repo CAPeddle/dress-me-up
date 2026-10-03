@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "build_id": "fixture-0001",
+  "scale": {
+    "target_body_height_px": 1000,
+    "factor": 0.5,
+    "source_dpi": 300,
+    "bound": "item_ceiling"
+  },
+  "bodies": [
+    {
+      "id": "body_a",
+      "image": "bodies/body_a.png",
+      "width": 300,
+      "height": 900,
+      "source_pdf": "fixture-book.pdf"
+    },
+    {
+      "id": "body_b",
+      "image": "bodies/body_b.png",
+      "width": 280,
+      "height": 880,
+      "source_pdf": "fixture-book.pdf"
+    },
+    {
+      "id": "body_c",
+      "image": "bodies/body_c.png",
+      "width": 320,
+      "height": 920,
+      "source_pdf": "fixture-book.pdf"
+    }
+  ]
+}

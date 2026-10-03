@@ -6,7 +6,10 @@ from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from dressup_pipeline.corrections import Correction, corrections_path, pdf_stem, write_corrections
+from dressup_pipeline.extract import DEFAULT_DPI
 from dressup_pipeline.models import BBox, Sidecar, SIDECAR_SUFFIX
+from synthetic import make_item_image
 
 
 @pytest.fixture
@@ -20,34 +23,56 @@ def page_with_stickers():
     return page
 
 
-def make_item_image(width=300, height=400, alpha=255, margin=40):
-    """An RGBA cutout: transparent margin around a solid, fully opaque body."""
-    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    draw.rectangle([margin, margin, width - margin, height - margin], fill=(180, 60, 90, alpha))
-    return image
+def corrections_root(tmp_path):
+    """Where the catalogue tests' corrections live: one directory per test.
+
+    Named here rather than in each test so the `sidecar_corpus` fixture and the
+    build under test cannot drift apart on which directory holds the labelling.
+    """
+    path = tmp_path / "corrections"
+    path.mkdir(exist_ok=True)
+    return path
+
+
+@pytest.fixture
+def corrections_dir(tmp_path):
+    return corrections_root(tmp_path)
 
 
 @pytest.fixture
 def sidecar_corpus(tmp_path):
-    """Build a small on-disk corpus and return (root, {item_id: Sidecar})."""
+    """Build a small on-disk corpus and return (root, {item_id: Sidecar}).
+
+    A spec's `correction` names the category a person filed the item under and
+    `rejection` the kind they rejected it as; either writes a real corrections
+    file beside the corpus, which is the only thing the catalogue build accepts.
+    Specs carrying neither stand for items nobody has ruled on yet.
+    """
 
     def _build(specs):
         root = tmp_path / "sidecars"
         root.mkdir(exist_ok=True)
+        corrections_dir = corrections_root(tmp_path)
         built = {}
-        for spec in specs:
+        filed = {}
+        for index, spec in enumerate(specs):
             item_id = spec["item_id"]
             image_name = f"{item_id}.png"
-            make_item_image(*spec.get("size", (300, 400))).save(root / image_name)
+            size = spec.get("size", (300, 400))
+            make_item_image(*size).save(root / image_name)
             sidecar = Sidecar(
                 item_id=item_id,
                 source_pdf=spec.get("source_pdf", "fantasy-book-1.pdf"),
                 page=spec.get("page", 0),
-                bbox=BBox(0, 0, *spec.get("size", (300, 400))),
+                # Its own box per spec, offset by position unless one is given: a
+                # correction is matched on geometry (KTD2), so one shared origin
+                # made every same-sized item a single identity and no test could
+                # label one of them and leave its neighbour alone.
+                bbox=spec.get("bbox", BBox(index, index, *size)),
                 image=image_name,
-                page_width=spec.get("page", (2480, 3508))[0],
-                page_height=spec.get("page", (2480, 3508))[1],
+                page_width=spec.get("page_size", (2480, 3508))[0],
+                page_height=spec.get("page_size", (2480, 3508))[1],
+                dpi=spec.get("dpi", DEFAULT_DPI),
                 category=spec.get("category"),
                 group=spec.get("group"),
                 quality=spec.get("quality"),
@@ -55,6 +80,13 @@ def sidecar_corpus(tmp_path):
             )
             sidecar.write(root / f"{item_id}{SIDECAR_SUFFIX}")
             built[item_id] = sidecar
+            if spec.get("correction") or spec.get("rejection"):
+                correction = Correction.for_sidecar(
+                    sidecar, category=spec.get("correction"), rejection=spec.get("rejection")
+                )
+                filed.setdefault(sidecar.source_pdf, []).append(correction)
+        for source_pdf, corrections in filed.items():
+            write_corrections(corrections_path(corrections_dir, pdf_stem(source_pdf)), corrections)
         return root, built
 
     return _build

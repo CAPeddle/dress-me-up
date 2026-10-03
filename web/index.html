@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; form-action 'none'; base-uri 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Dress Me Up</title>
+<link rel="stylesheet" href="css/game.css">
+</head>
+<body>
+<div class="turn" aria-hidden="true">
+  <svg class="turn-glyph" viewBox="0 0 128 128" width="128" height="128">
+    <rect x="44" y="20" width="40" height="66" rx="8" fill="none" stroke="currentColor" stroke-width="6"/>
+    <circle cx="64" cy="78" r="3" fill="currentColor"/>
+    <path d="M22 64 A42 42 0 0 1 64 22" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+    <path d="M14 56 L22 66 L32 58" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M106 64 A42 42 0 0 1 64 106" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+    <path d="M114 72 L106 62 L96 70" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+  <p class="turn-words">Turn me sideways</p>
+</div>
+<div id="content-message" class="content-message" hidden></div>
+<main id="game" class="game"></main>
+<div id="name-list" class="name-list" hidden></div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

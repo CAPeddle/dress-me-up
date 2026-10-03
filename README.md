@@ -17,7 +17,8 @@ grafted in against it. So:
 
 | | State |
 |---|---|
-| `tools/` — content pipeline | **real and tested**, 48 tests, chain verified end to end |
+| `tools/` — content pipeline | **real and tested**, chain verified end to end on the Fantasy scans |
+| `web/` — web version | **playable**, served from this machine to the tablet; the platform decision waits on a playtest |
 | `app/` — Kotlin/Compose | **never compiled** — written on a machine with no JDK or SDK |
 | Scans / 219 items | **not recovered** — the PDFs are being sourced separately |
 | `characters.json` | **placeholder** — the one manual step, unchanged since 2026-07-02 |
@@ -35,10 +36,31 @@ Content pipeline — scans in, catalog out:
 
 ```bash
 tools/.venv/bin/python tools/make_smoke_pdf.py           # stand-in for a real scan
-tools/.venv/bin/python tools/extract_pdf.py content/pdfs/*.pdf
+tools/.venv/bin/python tools/triage_pages.py content/source/<Set>/*.pdf   # rotation + page type per page
+tools/.venv/bin/python tools/extract_pdf.py content/source/<Set>/*.pdf --triage
 tools/.venv/bin/python tools/classify_and_qa.py --min-quality 0.90
-tools/.venv/bin/python tools/build_catalog.py --min-quality 0.90 --group fantasy
-cd tools && .venv/bin/python -m pytest                   # 48 tests
+tools/.venv/bin/python tools/correct_server.py       # the labelling pass -> tools/corrections/
+tools/.venv/bin/python tools/build_catalog.py --group fantasy --body-height 1000
+cd tools && .venv/bin/python -m pytest                   # pipeline + web tests
+```
+
+The labelling pass is the one step that is a person, not a batch:
+`correct_server.py` serves every extracted item on loopback for you to file in
+a browser, and the build admits exactly the items carrying one of those
+labels — so skipping it builds an empty catalog and exits non-zero.
+
+Real scans go under `content/source/<Set>/` — `Fantasy`, `Knight` and so on —
+because the classifier reads an item's group from the containing folder first
+and the filename second, and scanner apps name files by timestamp. A PDF named
+with its theme classifies from the name wherever it sits, which is how the smoke
+PDF at `content/pdfs/fantasy-smoke.pdf` works and how a hand-labelled scan can be
+dropped anywhere. Point the two commands above at whichever path holds the PDFs.
+
+Web version — the same catalog, played in the tablet's browser over the home
+network (no build step, no framework):
+
+```bash
+tools/.venv/bin/python web/serve.py --host <this machine's home-network address>
 ```
 
 App:
@@ -51,8 +73,15 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ## How the two halves meet
 
-The pipeline writes `app/src/main/assets/catalog.json` plus downsampled item
-PNGs. The app reads them. That is the entire contract — nothing else crosses.
+The pipeline writes `app/src/main/assets/catalog.json` plus scaled item PNGs,
+and beside them `bodies.json` plus the base-body PNGs, all at one shared scale
+and stamped with one build id. The Android app reads the catalog; the web
+version under `web/` reads both. That is the entire contract — nothing else
+crosses.
+
+`--group` filters Items only. Base Bodies are group independent: every entry in
+the tracked body list (`tools/base_bodies.json`) is cut and written whatever
+`--group` says, so a build narrowed to one theme still ships every body to dress.
 
 ## Contents
 
@@ -62,6 +91,7 @@ PNGs. The app reads them. That is the entire contract — nothing else crosses.
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Recovered architecture and phases, plus current state |
 | [`docs/TESTING.md`](docs/TESTING.md) | Why testing is on a physical tablet, not the emulator |
 | [`docs/memory/decisions.md`](docs/memory/decisions.md) | KTD decisions — 11..14 are marked reconstructions |
+| [`web/`](web/) | The web version: static files, `serve.py`, no recording code |
 | [`CLAUDE.md`](CLAUDE.md) | Guidance for Claude Code sessions |
 
 ---

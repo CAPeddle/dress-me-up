@@ -16,6 +16,11 @@ def test_roundtrips_through_json(tmp_path):
     assert Sidecar.read(path) == original
 
 
+def test_accepts_the_companion_category():
+    """A creature placed on a character, not worn by it — see CONCEPTS.md."""
+    _sidecar(category="companion", group="fantasy").validate()
+
+
 def test_rejects_unknown_category():
     with pytest.raises(SidecarError, match="unknown category"):
         _sidecar(category="jetpack").validate()

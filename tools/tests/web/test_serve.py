@@ -1,0 +1,343 @@
+"""``web/serve.py``: explicit address, read-only, two roots, one content policy."""
+
+from __future__ import annotations
+
+import http.client
+import socket
+import subprocess
+import sys
+import threading
+
+import pytest
+
+from tests.web.conftest import FIXTURE_ASSETS, REPO_ROOT, WEB_DIR
+
+SERVE_PY = WEB_DIR / "serve.py"
+
+
+def request(port, method, path, body=None):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        conn.request(method, path, body=body)
+        response = conn.getresponse()
+        return response.status, dict(response.getheaders()), response.read()
+    finally:
+        conn.close()
+
+
+def snapshot(*roots):
+    return {p for root in roots for p in root.rglob("*")}
+
+
+# ---------------------------------------------------------------- CLI posture
+
+# The first four are caught by name; the rest spell the same two wildcard
+# addresses in ways no literal set can enumerate, so only the address the socket
+# actually bound can refuse them. The last two are the IPv4-mapped spelling,
+# which Linux binds to every IPv4 interface while `ipaddress` does not call it
+# unspecified, so the post-bind check has to normalise before it judges.
+@pytest.mark.parametrize("host", [
+    "0.0.0.0", "::", "*", "", "0", "0.0", "00.0.0.0", "::0", "0:0:0:0:0:0:0:0",
+    "::ffff:0.0.0.0", "::ffff:0:0",
+])
+def test_wildcard_host_is_refused(serve, monkeypatch, capsys, host):
+    monkeypatch.setattr(serve, "SHARED_PORT", 0)  # never touch the shared port
+    created = []
+    real_make_server = serve.make_server
+
+    def spy(host, port, web_dir, assets_dir):
+        server = real_make_server(host, port, web_dir, assets_dir)
+        server.serve_forever = lambda *a, **kw: pytest.fail(
+            f"started serving on the wildcard address {server.server_address}"
+        )
+        created.append(server)
+        return server
+
+    monkeypatch.setattr(serve, "make_server", spy)
+
+    code = serve.main(["--host", host, "--assets", str(FIXTURE_ASSETS)])
+    err = capsys.readouterr().err
+
+    assert code == 2
+    assert repr(host) in err
+    assert "refusing" in err.lower()
+    # Whatever was bound to find out is closed again: nothing is left listening.
+    assert all(server.socket.fileno() == -1 for server in created)
+
+
+def test_host_is_required():
+    result = subprocess.run(
+        [sys.executable, str(SERVE_PY)], capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 2
+    assert "--host" in result.stderr
+
+
+def test_cli_has_no_port_flag(serve):
+    parser = serve.build_parser()
+    flags = {opt for action in parser._actions for opt in action.option_strings}
+    assert "--port" not in flags
+    assert serve.SHARED_PORT == 8777
+    assert serve.WILDCARD_HOSTS == {"0.0.0.0", "::", "*", ""}
+
+
+def test_held_port_refuses_to_bind(serve, site):
+    with pytest.raises(OSError):
+        serve.make_server("127.0.0.1", site.port, WEB_DIR, FIXTURE_ASSETS)
+
+
+def read_response_head(sock) -> bytes:
+    """Everything up to and including the blank line after the status and headers."""
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+def test_restart_is_not_blocked_by_a_served_connection(serve):
+    """A keep-alive client must not keep the next run of the server off the port.
+
+    The exclusivity the held-port test proves is the kernel's, and it survives
+    ``SO_REUSEADDR``; a lingering connection on the same port is not the same
+    thing as someone else holding it, and must not be reported as one.
+    """
+    server = serve.make_server("127.0.0.1", 0, WEB_DIR, FIXTURE_ASSETS)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    client = socket.create_connection(("127.0.0.1", port), timeout=5)
+    try:
+        client.sendall(
+            b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n"
+        )
+        assert b"200" in read_response_head(client)
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        # The client is still connected on that port; binding it again must work.
+        restarted = serve.make_server("127.0.0.1", port, WEB_DIR, FIXTURE_ASSETS)
+        restarted.server_close()
+    finally:
+        client.close()
+
+
+def test_cli_reports_held_port(serve, site, monkeypatch, capsys):
+    monkeypatch.setattr(serve, "SHARED_PORT", site.port)
+    code = serve.main(["--host", "127.0.0.1", "--assets", str(FIXTURE_ASSETS)])
+    assert code != 0
+    err = capsys.readouterr().err
+    assert "refusing to start" in err
+    assert str(site.port) in err
+
+
+def test_missing_assets_dir_is_refused(serve, tmp_path, capsys):
+    code = serve.main(["--host", "127.0.0.1", "--assets", str(tmp_path / "nope")])
+    assert code == 2
+    assert "assets" in capsys.readouterr().err
+
+
+def test_url_for_brackets_ipv6(serve):
+    assert serve.url_for("127.0.0.1", 8777) == "http://127.0.0.1:8777/"
+    assert serve.url_for("fd00::1", 8777) == "http://[fd00::1]:8777/"
+
+
+# ---------------------------------------------------------------- serving
+
+def test_index_carries_the_content_policy(serve, site):
+    status, headers, body = request(site.port, "GET", "/")
+    assert status == 200
+    assert headers["Content-Security-Policy"] == serve.CONTENT_SECURITY_POLICY
+    assert "default-src 'none'" in headers["Content-Security-Policy"]
+    assert headers["Content-Type"].startswith("text/html")
+    assert b"<script type=\"module\"" in body
+
+
+def test_every_response_carries_the_policy(serve, site):
+    for method, path in [("GET", "/nope.html"), ("HEAD", "/"), ("POST", "/"), ("GET", "/assets/catalog.json")]:
+        _, headers, _ = request(site.port, method, path)
+        assert headers.get("Content-Security-Policy") == serve.CONTENT_SECURITY_POLICY, (method, path)
+
+
+def test_module_script_has_javascript_type(site):
+    status, headers, _ = request(site.port, "GET", "/js/main.js")
+    assert status == 200
+    assert headers["Content-Type"].startswith("text/javascript")
+
+
+def test_assets_root_is_served_under_assets(site):
+    status, headers, body = request(site.port, "GET", "/assets/catalog.json")
+    assert status == 200
+    assert headers["Content-Type"].startswith("application/json")
+    assert b"fixture-0001" in body
+    status, headers, body = request(site.port, "GET", "/assets/bodies/body_a.png")
+    assert status == 200
+    assert headers["Content-Type"] == "image/png"
+    assert body[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_head_returns_headers_without_body(site):
+    status, headers, body = request(site.port, "HEAD", "/")
+    assert status == 200
+    assert int(headers["Content-Length"]) > 0
+    assert body == b""
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "DELETE", "PATCH"])
+def test_writes_are_refused_and_nothing_is_written(site, method):
+    before = snapshot(WEB_DIR, FIXTURE_ASSETS)
+    for path in ["/", "/events", "/assets/catalog.json", "/anything"]:
+        status, headers, _ = request(site.port, method, path, body=b'{"x":1}')
+        assert status == 405, (method, path)
+        assert headers.get("Allow") == "GET, HEAD"
+    assert snapshot(WEB_DIR, FIXTURE_ASSETS) == before
+
+
+def test_a_silent_client_is_not_held_for_the_whole_session(serve, site, monkeypatch, capfd):
+    """A connection that never sends a request line is reaped, not parked on a thread.
+
+    HTTP/1.1 keep-alive on a threading server with unbounded daemon threads means
+    a client on the home network that connects and then says nothing blocks its
+    thread inside ``readline()`` for the rest of the session, and nothing reaps
+    it. The handler's ``timeout`` is the only thing that bounds that, so the value
+    is pinned here and then exercised.
+    """
+    # Pinned as a value first: `BaseRequestHandler.timeout` is None, and inheriting
+    # it is the defect, so the attribute has to be this class's own.
+    assert "timeout" in vars(serve.StaticHandler)
+    assert serve.StaticHandler.timeout == 30
+    # Scaled rather than replaced, so the suite never waits the real 30 s and the
+    # check still rides on the real value: with no timeout this is `None / 100`,
+    # which raises instead of quietly passing.
+    monkeypatch.setattr(serve.StaticHandler, "timeout", serve.StaticHandler.timeout / 100)
+
+    client = socket.create_connection(("127.0.0.1", site.port), timeout=5)
+    try:
+        # An empty read is the server having closed it; a held connection would
+        # instead hit this socket's own 5 s timeout and raise.
+        assert client.recv(1) == b""
+    finally:
+        client.close()
+    # The timeout goes through `log_error`, which `BaseHTTPRequestHandler` routes
+    # into this file's no-op `log_message`: a reaped client is not an access log.
+    assert capfd.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("path", [
+    "/../tools/pyproject.toml",
+    "/../../tools/pyproject.toml",
+    "/%2e%2e/tools/pyproject.toml",
+    "/assets/../serve.py",
+    "/assets/../../tools/pyproject.toml",
+    "/serve.py",
+    "/css/",
+    "/assets/",
+    "/assets",
+    "/js/../js/../../CLAUDE.md",
+])
+def test_paths_outside_the_two_roots_are_refused(site, path):
+    status, _, _ = request(site.port, "GET", path)
+    assert status == 404, path
+
+
+def test_resolve_path_is_pure(serve, tmp_path):
+    web = tmp_path / "web"
+    assets = tmp_path / "assets"
+    (web / "css").mkdir(parents=True)
+    assets.mkdir()
+    (web / "index.html").write_text("x")
+    (web / "css" / "game.css").write_text("x")
+    (web / "serve.py").write_text("x")
+    (assets / "catalog.json").write_text("{}")
+    (tmp_path / "secret.json").write_text("{}")
+    assert serve.resolve_path("/", web, assets) == (web / "index.html").resolve()
+    assert serve.resolve_path("/css/game.css?v=1", web, assets) == (web / "css" / "game.css").resolve()
+    assert serve.resolve_path("/assets/catalog.json", web, assets) == (assets / "catalog.json").resolve()
+    assert serve.resolve_path("/serve.py", web, assets) is None
+    assert serve.resolve_path("/../secret.json", web, assets) is None
+    assert serve.resolve_path("/assets/../secret.json", web, assets) is None
+    assert serve.resolve_path("/assets/../../secret.json", web, assets) is None
+    assert serve.resolve_path("/css", web, assets) is None
+    assert serve.resolve_path("/index.html%00.png", web, assets) is None
+
+
+def test_a_symlink_out_of_a_root_is_refused(serve, tmp_path):
+    """Resolution follows links, so a link is not a way around the two roots.
+
+    Both the file link and the directory link point at real files carrying a
+    served extension, so the refusal can only come from the root check and not
+    from the extension or is_file guards further down.
+    """
+    web = tmp_path / "web"
+    assets = tmp_path / "assets"
+    outside = tmp_path / "outside"
+    web.mkdir()
+    assets.mkdir()
+    outside.mkdir()
+    (web / "index.html").write_text("x")
+    (outside / "secret.json").write_text("{}")
+
+    (web / "escape.json").symlink_to(outside / "secret.json")
+    (assets / "escape.json").symlink_to(outside / "secret.json")
+    (web / "elsewhere").symlink_to(outside, target_is_directory=True)
+    (assets / "elsewhere").symlink_to(outside, target_is_directory=True)
+
+    # The links really do reach the file; only resolve_path refuses them.
+    assert (web / "escape.json").read_text() == "{}"
+    assert (web / "elsewhere" / "secret.json").read_text() == "{}"
+
+    for path in [
+        "/escape.json",
+        "/elsewhere/secret.json",
+        "/assets/escape.json",
+        "/assets/elsewhere/secret.json",
+    ]:
+        assert serve.resolve_path(path, web, assets) is None, path
+
+    # A served file that is not a link still resolves, so the refusals above are
+    # about leaving the root and not about the roots being unreadable.
+    assert serve.resolve_path("/index.html", web, assets) == (web / "index.html").resolve()
+
+
+def test_a_symlink_out_of_a_root_is_404_over_http(serve, server_factory, tmp_path):
+    """The same refusal through a real request, not only through resolve_path."""
+    web = tmp_path / "linked-web"
+    assets = tmp_path / "linked-assets"
+    outside = tmp_path / "linked-outside"
+    web.mkdir()
+    assets.mkdir()
+    outside.mkdir()
+    (web / "index.html").write_text("<!doctype html>")
+    (outside / "secret.json").write_text("{}")
+    (web / "escape.json").symlink_to(outside / "secret.json")
+    (assets / "escape.json").symlink_to(outside / "secret.json")
+    (web / "elsewhere").symlink_to(outside, target_is_directory=True)
+
+    running = server_factory(assets, web)
+    assert request(running.port, "GET", "/")[0] == 200
+    for path in ["/escape.json", "/elsewhere/secret.json", "/assets/escape.json"]:
+        status, _, body = request(running.port, "GET", path)
+        assert status == 404, path
+        assert b"{}" not in body, path
+
+
+def test_no_access_log_on_stdout(serve, tmp_path):
+    result = subprocess.run(
+        [sys.executable, "-c", (
+            "import importlib.util, sys, threading, http.client\n"
+            f"spec = importlib.util.spec_from_file_location('s', {str(SERVE_PY)!r})\n"
+            "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+            f"s = m.make_server('127.0.0.1', 0, {str(WEB_DIR)!r}, {str(FIXTURE_ASSETS)!r})\n"
+            "t = threading.Thread(target=s.serve_forever, daemon=True); t.start()\n"
+            "c = http.client.HTTPConnection('127.0.0.1', s.server_address[1]); c.request('GET', '/'); c.getresponse().read()\n"
+            "c.request('GET', '/missing'); c.getresponse().read()\n"
+            "s.shutdown(); s.server_close()\n"
+        )],
+        capture_output=True, text=True, timeout=30, cwd=REPO_ROOT,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert result.stderr == ""

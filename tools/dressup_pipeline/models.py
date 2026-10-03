@@ -26,6 +26,10 @@ CATEGORIES = (
     "shield",
     "accessory",
     "wings",
+    # A creature placed on a character rather than worn by it. Sits beside
+    # `mount` — the rideable a Dragon book may yet supply — because both are
+    # creatures rather than clothing, and nothing worn follows them.
+    "companion",
     "mount",
 )
 
@@ -70,11 +74,19 @@ class Sidecar:
     page: int
     bbox: BBox
     image: str  # path to the cutout PNG, relative to the sidecar's own directory
+    # Folder the source file sat in. Scans arrive timestamp-named
+    # ("20260509081623.pdf"), so the folder is usually the only thing carrying
+    # the theme — see HeuristicClassifier._group.
+    source_folder: str = ""
     # Size of the page render this was cut from. Recorded here rather than passed
     # to later stages, so classification can never be run against the wrong
     # dimensions and silently mis-slot every item.
     page_width: int = 0
     page_height: int = 0
+    # Render DPI the extractor ran at, so later stages can check that every
+    # image in a build shares one physical scale. 0 means "not recorded" —
+    # sidecars written before this field existed still load.
+    dpi: int = 0
     category: str | None = None
     group: str | None = None
     quality: float | None = None
@@ -92,6 +104,8 @@ class Sidecar:
             raise SidecarError(f"{self.item_id}: quality {self.quality} outside 0..1")
         if self.page_width < 0 or self.page_height < 0:
             raise SidecarError(f"{self.item_id}: negative page dimensions")
+        if self.dpi < 0:
+            raise SidecarError(f"{self.item_id}: negative dpi {self.dpi}")
 
     @property
     def is_classified(self) -> bool:

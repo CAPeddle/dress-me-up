@@ -3,7 +3,7 @@ from PIL import Image
 from dressup_pipeline.qa import score_image
 from dressup_pipeline.models import BBox, Sidecar
 from dressup_pipeline.qa import qa_sidecar
-from conftest import make_item_image
+from synthetic import make_item_image
 
 
 def test_clean_cutout_scores_high():

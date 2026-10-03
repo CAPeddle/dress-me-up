@@ -1,3 +1,13 @@
+# What is in this directory
+
+`catalog.json`, `items/`, `bodies.json` and `bodies/` are **generated** by the
+pipeline (`tools/build_catalog.py`) and are not tracked, so a fresh clone has
+none of them until the pipeline has run. Every content build rewrites them at
+that build's shared scale.
+
+`characters.json` and `characters/` are hand-authored and tracked. They are what
+the rest of this file is about.
+
 # Authoring `characters.json`
 
 The catalog is generated. **This file is not** — snap points have to be placed by
@@ -33,8 +43,9 @@ mechanics; they are not enough to look right.
 ## Categories
 
 `hat`, `hair`, `top`, `bottom`, `dress`, `shoes`, `weapon`, `shield`,
-`accessory`, `wings`, `mount` — defined in `tools/dressup_pipeline/models.py`.
-An item only snaps to a point declaring its own category.
+`accessory`, `wings`, `companion`, `mount` — defined in
+`tools/dressup_pipeline/models.py`. An item only snaps to a point declaring its
+own category.
 
 Two points may share a coordinate (`dress` and `top` overlap on the torso); the
 category filter keeps them from competing.

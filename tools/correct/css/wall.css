@@ -1,0 +1,253 @@
+/* A desk, a keyboard and half an hour: dark so a few hundred cutouts on white
+   paper are the only bright thing on the screen, and laid out so the wall is the
+   whole window under a header that never scrolls away from it.
+
+   Not responsive and not touch-sized on purpose — this tool is a person sitting at
+   this machine, not the tablet the game runs on. */
+
+:root {
+  --ink: #e9e6e1;
+  --dim: #9a948c;
+  --paper: #16181c;
+  --panel: #1e2127;
+  --edge: #2e3239;
+  --pick: #ffd166;
+  --bad: #e5646d;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  color: var(--ink);
+  font: 14px/1.4 system-ui, sans-serif;
+  /* A run is selected by shift-click, and a shift-click that also selects the text
+     under it turns every run into a blue smear. */
+  user-select: none;
+}
+
+/* ---------------------------------------------------------------- header */
+
+.header {
+  flex: none;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--edge);
+}
+
+.title {
+  display: inline;
+  margin: 0 12px 0 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.status {
+  display: inline;
+  margin: 0;
+  color: var(--dim);
+}
+
+.status .tally {
+  margin-right: 12px;
+}
+
+.status .remaining {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-top: 8px;
+}
+
+.legend-entry {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.legend-entry .key {
+  min-width: 14px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--edge);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 700;
+  text-align: center;
+}
+
+.legend-entry.rejection .key {
+  background: #4a2a2e;
+  color: var(--bad);
+}
+
+.legend-entry.command .key {
+  background: #3c3722;
+  color: var(--pick);
+}
+
+.legend-entry .name {
+  color: var(--dim);
+}
+
+/* ---------------------------------------------------------------- message */
+
+.message {
+  flex: none;
+  margin: 0;
+  padding: 8px 16px;
+  background: #23262c;
+  border-bottom: 1px solid var(--edge);
+}
+
+.message[data-wall-failed] {
+  background: #3a2226;
+  color: var(--bad);
+}
+
+/* ---------------------------------------------------------------- the wall */
+
+.wall {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+
+.canvas {
+  position: relative;
+  width: 100%;
+}
+
+.tile {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: var(--tile-w, 152px);
+  height: var(--tile-h, 176px);
+  padding: 6px;
+  background: var(--panel);
+  border: 2px solid var(--edge);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.tile img {
+  max-width: 100%;
+  /* Room for the tag under it; a cutout is never scaled up past its own pixels. */
+  max-height: calc(100% - 20px);
+  object-fit: contain;
+}
+
+.tile .tag {
+  color: var(--dim);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.tile.unaccepted {
+  border-style: dashed;
+}
+
+.tile[data-wall-selected="true"] {
+  border-color: var(--pick);
+  background: #2a2a20;
+}
+
+.tile.focused {
+  outline: 1px solid var(--ink);
+  outline-offset: 1px;
+}
+
+/* ---------------------------------------------------------------- overlays */
+
+.overlay {
+  position: fixed;
+  inset: 48px;
+  z-index: 2;
+  overflow: auto;
+  padding: 16px;
+  background: #11131688;
+  backdrop-filter: blur(3px);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+}
+
+.overlay[hidden] {
+  display: none;
+}
+
+.enlarge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: #0d0f12ee;
+}
+
+.enlarged {
+  max-width: 100%;
+  max-height: calc(100% - 32px);
+  object-fit: contain;
+}
+
+.note {
+  margin: 0;
+  color: var(--dim);
+}
+
+.filed {
+  background: #101216f2;
+}
+
+.bucket {
+  margin-bottom: 16px;
+}
+
+.bucket-name {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--dim);
+  text-transform: capitalize;
+}
+
+.bucket-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.filed-tile {
+  position: static;
+  width: 96px;
+  height: 96px;
+}

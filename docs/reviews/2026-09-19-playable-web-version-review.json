@@ -1,0 +1,47 @@
+{
+  "findings": [
+    {
+      "title": "[P1] Remove outputs for pages skipped by triage",
+      "body": "When `--triage` is rerun into the normal existing output directory after an override changes a page from `item_sheet` to `base_body`/`illustration` (or after an earlier untriaged extraction), this `continue` leaves that page's old PNGs and sidecars on disk. `build_catalog` later discovers those stale sidecars normally, so the catalog still contains the garbage that triage was introduced to exclude; the extraction pass needs to remove obsolete outputs for this PDF/page while preserving current sidecars' downstream fields. This also violates the repository's rerunnable-stage invariant in `CLAUDE.md:80-85`.",
+      "confidence_score": 0.99,
+      "priority": 1,
+      "code_location": {
+        "absolute_file_path": "/home/cpeddle/projects/personal/dress-me-up/tools/dressup_pipeline/extract.py",
+        "line_range": {"start": 159, "end": 161}
+      }
+    },
+    {
+      "title": "[P1] Preserve the theme when extracting staged PDFs",
+      "body": "For the documented real-content flow where selected timestamp-named scans are placed directly in `content/pdfs/` (`content/README.md:9` and the README quickstart), this records `source_folder` as `pdfs`; the filename has no theme hint, so `HeuristicClassifier` assigns every item to `misc` and the documented `build_catalog.py --group fantasy` writes nothing. Preserve the original set name in the staging layout/metadata or make the group explicit rather than deriving it from this generic directory.",
+      "confidence_score": 0.98,
+      "priority": 1,
+      "code_location": {
+        "absolute_file_path": "/home/cpeddle/projects/personal/dress-me-up/tools/dressup_pipeline/extract.py",
+        "line_range": {"start": 173, "end": 173}
+      }
+    },
+    {
+      "title": "[P2] Reject an all-legacy corpus with unknown DPI",
+      "body": "If every sidecar predates the new `dpi` field, each loads with the documented sentinel `0`, and this branch accepts `0` as the shared render DPI. PyMuPDF treats `dpi=0` as its roughly 72-DPI default, while those item PNGs may have been extracted at 300 DPI, so bodies are silently cut about four times smaller relative to items and the shared scale factor cannot restore the required proportions (`CLAUDE.md:75-78`). Treat the sole value `0` as unknown and require re-extraction, just as the mixed `0`/real-DPI case already does.",
+      "confidence_score": 0.97,
+      "priority": 2,
+      "code_location": {
+        "absolute_file_path": "/home/cpeddle/projects/personal/dress-me-up/tools/dressup_pipeline/bodies.py",
+        "line_range": {"start": 126, "end": 127}
+      }
+    },
+    {
+      "title": "[P2] Reject stored item indices outside the catalog",
+      "body": "When localStorage contains a placement whose `item` is at or above the current item count while the build id is unchanged (for example after a hand-edited catalog or corrupted state), deserialization accepts it; `renderPlaced` then indexes `state.items` with that value and startup falls into the content-failure screen. Since this function promises malformed storage becomes fresh state, pass the item count into loading/deserialization and reject out-of-range item indices just as body indices are rejected.",
+      "confidence_score": 0.98,
+      "priority": 2,
+      "code_location": {
+        "absolute_file_path": "/home/cpeddle/projects/personal/dress-me-up/web/js/store.js",
+        "line_range": {"start": 57, "end": 57}
+      }
+    }
+  ],
+  "overall_correctness": "patch is incorrect",
+  "overall_explanation": "The new triage and shared-scale pipeline can silently retain excluded pages or generate bodies at the wrong physical scale, and the documented staged-PDF flow loses the theme required by the catalog filter. The web persistence issue adds a narrower startup failure mode.",
+  "overall_confidence_score": 0.97
+}

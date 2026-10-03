@@ -53,8 +53,13 @@ def shape_of(sidecar: Sidecar) -> Shape:
 class HeuristicClassifier:
     """Rule-based first pass, tuned for the fantasy/knight sticker books.
 
-    Sticker sheets group items by kind and lay them out roughly by body order, so
-    vertical position on the page carries real signal alongside shape.
+    Its vertical rules assume a sheet laid out roughly by body order. That is an
+    assumption, not a property of sticker sheets in general, and it does not
+    hold for the scans in hand: they sit on a padded canvas, so nothing reaches
+    the lower branches at all.
+
+    So the category is a suggestion that orders the review and nothing more — the
+    catalog takes an item's category from a human correction, never from here.
     """
 
     def classify(self, sidecar: Sidecar, shape: Shape) -> tuple[str, str]:
@@ -80,11 +85,26 @@ class HeuristicClassifier:
         return "top" if shape.centre_y < 0.55 else "bottom"
 
     def _group(self, sidecar: Sidecar) -> str:
-        name = sidecar.source_pdf.lower()
-        for hint, group in sorted(GROUP_HINTS.items(), key=lambda kv: -len(kv[0])):
-            if hint in name:
+        """Folder first, then filename.
+
+        Scanner apps name files by timestamp, so the containing folder ("Fantasy",
+        "Fantasy w Boy", "Knight ") is normally the only place the theme survives.
+        Filename is kept as a fallback for hand-named files.
+        """
+        for candidate in (sidecar.source_folder, sidecar.source_pdf):
+            group = self._match(candidate)
+            if group:
                 return group
         return "misc"
+
+    @staticmethod
+    def _match(text: str) -> str | None:
+        haystack = text.lower()
+        # Longest hint first, so "princess" is not shadowed by a shorter match.
+        for hint, group in sorted(GROUP_HINTS.items(), key=lambda kv: -len(kv[0])):
+            if hint in haystack:
+                return group
+        return None
 
 
 def classify_sidecar(sidecar: Sidecar, shape: Shape, classifier: Classifier | None = None) -> Sidecar:
