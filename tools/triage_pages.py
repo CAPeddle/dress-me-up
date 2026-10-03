@@ -4,10 +4,12 @@
     python tools/triage_pages.py content/source/Fantasy/*.pdf [--out content/triage] [--dpi N]
 
 Writes <out>/<stem>.json (the manifest) and <out>/<stem>.<verdict>.png for every
-verdict class that has pages, so rejections can be checked at a glance. If
-<out>/<stem>.overrides.json exists — {"pages": {"3": "item_sheet"}}, 0-indexed
-— its confirmations are merged into the manifest on every run. A bad override
-(unknown page, unknown verdict) stops the run before anything is written.
+verdict class that has pages, so rejections can be checked at a glance. A re-run
+replaces that PDF's sheets rather than adding to them, so a class that emptied
+since the last run loses its sheet. If <out>/<stem>.overrides.json exists —
+{"pages": {"3": "item_sheet"}}, 0-indexed — its confirmations are merged into the
+manifest on every run. A bad override (unknown page, unknown verdict) stops the
+run before anything is written.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from dressup_pipeline.pagetype import PAGE_TYPES
 from dressup_pipeline.triage import (
     TRIAGE_DPI,
     OverrideError,
@@ -30,6 +33,11 @@ from dressup_pipeline.triage import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def sheet_path(triage_dir: Path, pdf_path: Path, verdict: str) -> Path:
+    """Where one verdict class's contact sheet for `pdf_path` lives."""
+    return triage_dir / f"{pdf_path.stem}.{verdict}.png"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -60,12 +68,20 @@ def main(argv: list[str] | None = None) -> int:
 
         manifest.write(manifest_path(args.out, pdf))
 
+        # Clear this PDF's sheets before writing the new set. A sheet is what a
+        # person reads a verdict class off, so one left behind by a class that
+        # emptied since the last run asserts pages this manifest no longer puts
+        # there. Enumerating the verdicts rather than globbing <stem>.*.png
+        # keeps the manifest and the hand-authored overrides out of reach.
+        for verdict in PAGE_TYPES:
+            sheet_path(args.out, pdf, verdict).unlink(missing_ok=True)
+
         upright = dict(rendered)
         by_verdict: dict[str, list[tuple[int, object]]] = {}
         for page in manifest.pages:
             by_verdict.setdefault(page.verdict, []).append((page.page, upright[page.page]))
         for verdict, pages in by_verdict.items():
-            contact_sheet(pages).save(args.out / f"{pdf.stem}.{verdict}.png")
+            contact_sheet(pages).save(sheet_path(args.out, pdf, verdict))
 
         counts = Counter(page.verdict for page in manifest.pages)
         confirmed = sum(page.confirmed is not None for page in manifest.pages)

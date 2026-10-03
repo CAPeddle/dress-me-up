@@ -26,6 +26,8 @@ from dressup_pipeline.triage import (
 )
 from synthetic import make_border_doll_page
 
+BLANK_PAGE_SIZE = (660, 700)  # the border-doll page's, so the book reads as one scan
+
 TOOLS = Path(__file__).resolve().parents[1]
 
 
@@ -268,4 +270,57 @@ def test_cli_fails_on_an_override_for_a_missing_page_and_writes_nothing(tmp_path
     assert _run_cli([str(pdf), "--out", str(out)]) != 0
 
     assert not (out / "smoke.json").exists()
+    assert "page 9" in capsys.readouterr().err
+
+
+def _doll_pdf(path, blank_page=True):
+    """A PDF spanning two verdict classes: a doll page, then a blank one.
+
+    Both verdicts come from hard thresholds rather than the ambiguous band, so
+    dropping the blank page is a reliable way to empty a class between runs.
+    """
+    pages = [make_border_doll_page()]
+    if blank_page:
+        pages.append(Image.new("RGB", BLANK_PAGE_SIZE, "white"))
+    pages[0].save(path, save_all=True, append_images=pages[1:])
+    return path
+
+
+def test_cli_rerun_drops_the_sheet_of_a_verdict_class_that_emptied(tmp_path):
+    pdf = _doll_pdf(tmp_path / "book.pdf")
+    out = tmp_path / "triage"
+    out.mkdir()
+    overrides = out / "book.overrides.json"
+    overrides.write_text(json.dumps({"pages": {"0": "base_body"}}))
+    stranger = out / "other.blank.png"
+    stranger.write_bytes(b"another PDF's sheet")
+
+    assert _run_cli([str(pdf), "--out", str(out)]) == 0
+    assert (out / "book.blank.png").exists()
+
+    _doll_pdf(pdf, blank_page=False)  # the scan was replaced; nothing is blank now
+    assert _run_cli([str(pdf), "--out", str(out)]) == 0
+
+    assert not (out / "book.blank.png").exists()
+    assert (out / "book.base_body.png").exists()
+    # The removal is scoped to sheets: the manifest, the hand-authored
+    # overrides and another PDF's sheet all come through untouched.
+    assert Manifest.read(out / "book.json").pages[0].confirmed == "base_body"
+    assert json.loads(overrides.read_text()) == {"pages": {"0": "base_body"}}
+    assert stranger.read_bytes() == b"another PDF's sheet"
+
+
+def test_cli_keeps_the_old_sheets_when_an_override_fails(tmp_path, capsys):
+    pdf = _doll_pdf(tmp_path / "book.pdf", blank_page=False)
+    out = tmp_path / "triage"
+    out.mkdir()
+    (out / "book.overrides.json").write_text(json.dumps({"pages": {"9": "item_sheet"}}))
+    stale = out / "book.base_body.png"
+    stale.write_bytes(b"last run's sheet")
+
+    assert _run_cli([str(pdf), "--out", str(out)]) != 0
+
+    # A failed run writes nothing, so it removes nothing: a typo in an
+    # overrides file must not cost the sheets the last good run left behind.
+    assert stale.read_bytes() == b"last run's sheet"
     assert "page 9" in capsys.readouterr().err
