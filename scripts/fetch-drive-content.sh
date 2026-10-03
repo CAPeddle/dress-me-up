@@ -72,9 +72,22 @@ if ! command -v rclone >/dev/null 2>&1; then
   mkdir -p "$BIN_DIR"
   tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
   arch="$(uname -m)"; case "$arch" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
-  curl -fL --progress-bar -o "$tmp/rclone.zip" \
-    "https://downloads.rclone.org/rclone-current-linux-${arch}.zip" || die "download failed"
-  unzip -qj "$tmp/rclone.zip" '*/rclone' -d "$BIN_DIR"
+
+  # Pinned, and checked against the sums published beside it. The binary lands on
+  # PATH and is then run by this script, so a redirected download or a trusted-root
+  # proxy would be executing as this user; TLS alone decides nothing about what
+  # arrived. Bump the version deliberately rather than tracking rclone-current.
+  RCLONE_VERSION="v1.71.0"
+  base="https://downloads.rclone.org/${RCLONE_VERSION}"
+  zip="rclone-${RCLONE_VERSION}-linux-${arch}.zip"
+  curl -fL --progress-bar -o "$tmp/$zip" "$base/$zip" || die "download failed"
+  curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS" || die "could not fetch SHA256SUMS"
+  # Only this archive's line, so an unrelated entry cannot satisfy the check.
+  grep -F " $zip" "$tmp/SHA256SUMS" > "$tmp/want" || die "no checksum published for $zip"
+  ( cd "$tmp" && sha256sum -c --status want ) \
+    || die "rclone checksum mismatch — refusing to install $zip"
+
+  unzip -qj "$tmp/$zip" '*/rclone' -d "$BIN_DIR"
   chmod +x "$BIN_DIR/rclone"
   ok "$(rclone version | head -1)"
 fi

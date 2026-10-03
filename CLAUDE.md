@@ -22,15 +22,19 @@ retired laptop (KTD-15). Consequences that will bite otherwise:
 
 - **The Python pipeline is real and tested.** 488 tests pass, including browser
   tests under Playwright, and the full chain has been run end to end on a
-  synthetic PDF and on the real corpus.
+  synthetic PDF and on this machine's own scans.
 - **The Kotlin has never been compiled.** It was written on a machine with no JDK
   and no Android SDK. Treat every `.kt` file as unreviewed first-draft code:
   expect import and API-surface errors on the first build. Do not describe the
   app as working. Run `scripts/setup-ubuntu.sh` first.
-- **`content/` is empty.** The scans and the 219 QA'd items did not survive.
-  `build_catalog.py` produces an empty catalog until real PDFs land under
-  `content/source/<Set>/`; `tools/make_smoke_pdf.py` writes a synthetic stand-in
-  to `content/pdfs/` instead.
+- **`content/` is gitignored, so the repository carries no scans** and the
+  original's 219 QA'd items did not survive. This machine's tree is not empty —
+  18 source PDFs, three of them extracted to 333 sidecars — which is what the
+  end-to-end run above was against, and none of it is in git. A fresh clone has
+  nothing: `build_catalog.py` produces an empty catalog until real PDFs land
+  under `content/source/<Set>/` *and* someone labels the items with
+  `correct_server.py`; `tools/make_smoke_pdf.py` writes a synthetic stand-in to
+  `content/pdfs/` instead.
 - **`docs/ROADMAP.md` and `docs/TESTING.md` describe the LOST ORIGINAL**, not
   this tree. Where they disagree with what is on disk, neither is automatically
   right — check before "fixing" code to match a doc.
