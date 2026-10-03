@@ -346,10 +346,61 @@ def corpus_manifest(
 
 # ---------------------------------------------------------------- the one write
 
+class FilingOrder:
+    """The `(session, revision)` last written for each correction identity.
+
+    Transport only, and in memory only: the file on disk keeps the shape three
+    other tools read (R7), and a restart forgets all of this because the race it
+    settles cannot outlive the page that caused it.
+
+    That race is the wall's one write that does not queue. `pagehide` sends its
+    batch by beacon, with no promise to wait on and so no place behind the chain
+    the rest of the writes serialize through, and it can therefore overtake a batch
+    still in flight. Both can name one item — file it, then re-file it from the
+    filed panel before the first write lands — and `apply_filings` merges
+    last-wins, so without this the person's last action is kept or lost depending
+    on which request the server happened to handle second.
+
+    Compared only within one session, because the client's counter restarts at 1
+    on every page load: a global comparison would read every filing after a reload
+    as older than the sitting before it and drop the lot. The numbers also skip —
+    a verdict replaced before its batch went out, and a revert of a refused one,
+    both take a revision nothing sends — so this compares them and never counts
+    them.
+    """
+
+    def __init__(self) -> None:
+        self._applied: dict[CorrectionKey, tuple[str, int]] = {}
+
+    def allows(self, key: CorrectionKey, stamp: tuple[str, int] | None) -> bool:
+        """Whether this write is still the newest one this session has for `key`.
+
+        An unstamped write is always allowed: a client that names no session is not
+        in this race at all — `curl` at this desk, or any other tool — and holding
+        it to an order it never claimed would silently drop its filings.
+        """
+        if stamp is None:
+            return True
+        session, revision = stamp
+        last = self._applied.get(key)
+        return last is None or last[0] != session or revision > last[1]
+
+    def record(self, key: CorrectionKey, stamp: tuple[str, int] | None) -> None:
+        """Remember a write that reached disk.
+
+        Only what landed, never what was merely accepted: a refused write is
+        reverted on the page, back to the verdict an earlier revision put there, so
+        recording a revision that failed would make that older verdict unwritable
+        and leave the page disagreeing with the file.
+        """
+        if stamp is not None:
+            self._applied[key] = stamp
+
+
 def parse_filings(
     payload: object, items: dict[str, CorpusItem]
-) -> tuple[list[Correction], list[CorrectionKey]]:
-    """Turn a posted batch into corrections to file and identities to unfile.
+) -> tuple[list[Correction], list[CorrectionKey], dict[CorrectionKey, tuple[str, int]]]:
+    """Turn a posted batch into corrections to file, identities to unfile, and their order.
 
     Every record is built with `Correction.for_sidecar` off the sidecar the server
     already holds, so the client supplies an item id and a verdict and nothing
@@ -359,6 +410,13 @@ def parse_filings(
     item. Undo needs it: a filed item leaves the wall at once and the batch
     flushes on a short interval, so one mis-keyed run is on disk before anybody
     reaches for undo, and without this the only way back is editing the file.
+
+    A batch may name the page it came from in `session`, and then every record in
+    it carries a `revision`: together they are the stamp `FilingOrder` orders two
+    writes for one item by. Both are optional and refused only half-given, because
+    a client that claims no session is not in that race — but a revision with no
+    session is a stamp that cannot be compared to anything, which is a client bug
+    rather than a write to accept and silently order by arrival.
     """
     if not isinstance(payload, dict):
         raise BadRequest("expected an object with a 'filings' list")
@@ -367,9 +425,16 @@ def parse_filings(
         raise BadRequest("'filings' is not a list")
     if not raw:
         raise BadRequest("'filings' is empty; nothing to file")
+    session = payload.get("session")
+    if session is not None and (not isinstance(session, str) or not session):
+        raise BadRequest(f"session {session!r} is not a name for the page that wrote")
 
     filings: list[Correction] = []
     unfilings: list[CorrectionKey] = []
+    # Keyed by correction identity rather than by item id, because that is what
+    # the merge on disk is keyed by: two items of identical geometry are one
+    # record in the file, so they are one thing to order as well.
+    stamps: dict[CorrectionKey, tuple[str, int]] = {}
     # One entry per item. Withdrawals are applied before filings and filings
     # merge last-wins, so a batch naming one item twice would resolve itself
     # silently — keeping the filing over its undo, or one category over another
@@ -387,26 +452,40 @@ def parse_filings(
         if item_id in seen:
             raise BadRequest(f"{item_id}: named twice in one batch")
         seen.add(item_id)
+        revision = entry.get("revision")
+        if session is None:
+            if revision is not None:
+                raise BadRequest(f"{item_id}: revision {revision!r} names no session to order it in")
+        # `bool` is an `int` to Python and `true` is not a revision anybody meant.
+        elif not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
+            raise BadRequest(f"{item_id}: revision {revision!r} is not a count of this page's verdicts")
+        stamp = None if session is None else (session, revision)
         if entry.get("unfile"):
             # Refused rather than resolved: filing and withdrawing one item in the
             # same breath is a client bug, and picking a winner would hide it.
             if category is not None or rejection is not None:
                 raise BadRequest(f"{item_id}: unfile carries a verdict as well")
-            unfilings.append(sidecar_key(items[item_id].sidecar))
+            key = sidecar_key(items[item_id].sidecar)
+            # Withdrawals are ordered with the filings, not around them: an undo
+            # overtaken by the filing it withdraws would re-file the item.
+            if stamp is not None:
+                stamps[key] = stamp
+            unfilings.append(key)
             continue
         if category is not None and not isinstance(category, str):
             raise BadRequest(f"{item_id}: category {category!r} is not a name")
         if rejection is not None and not isinstance(rejection, str):
             raise BadRequest(f"{item_id}: rejection {rejection!r} is not a name")
         try:
-            filings.append(
-                Correction.for_sidecar(
-                    items[item_id].sidecar, category=category, rejection=rejection
-                )
+            correction = Correction.for_sidecar(
+                items[item_id].sidecar, category=category, rejection=rejection
             )
         except CorrectionError as exc:
             raise BadRequest(str(exc)) from exc
-    return filings, unfilings
+        if stamp is not None:
+            stamps[correction.key] = stamp
+        filings.append(correction)
+    return filings, unfilings, stamps
 
 
 def apply_filings(
@@ -660,7 +739,7 @@ class CorrectHandler(BaseHTTPRequestHandler):
             self._refuse_json(HTTPStatus.BAD_REQUEST, f"invalid JSON: {exc}")
             return
         try:
-            filings, unfilings = parse_filings(payload, self.server.items)
+            filings, unfilings, stamps = parse_filings(payload, self.server.items)
         except BadRequest as exc:
             # Whole-batch: a selection filed by one keystroke is one judgement, and
             # landing half of it would leave the person guessing which half.
@@ -670,10 +749,33 @@ class CorrectHandler(BaseHTTPRequestHandler):
         # thread, so two batches for one PDF would otherwise both load the file,
         # and the second write would erase the first batch's filings — the same
         # erasure the merge exists to prevent, arrived at concurrently.
+        #
+        # The order the file is left in is decided inside that same lock, for the
+        # same reason the merge is: two requests reading `FilingOrder` before
+        # either wrote would both believe themselves the newest.
         with self.server.write_lock:
+            order = self.server.order
+            fresh = [c for c in filings if order.allows(c.key, stamps.get(c.key))]
+            fresh_unfilings = [k for k in unfilings if order.allows(k, stamps.get(k))]
             written, failed = apply_filings(
-                self.server.corrections_dir, filings, unfilings
+                self.server.corrections_dir, fresh, fresh_unfilings
             )
+            # Per book, because a batch spanning two of them can land in one and
+            # fail in the other, and only what landed may close the door on an
+            # older revision. The stem is the correction's `source_pdf` and the
+            # withdrawal key's first field, which is what `apply_filings` routes
+            # and reports by.
+            landed = {entry["source_pdf"] for entry in written}
+            for correction in fresh:
+                if correction.source_pdf in landed:
+                    order.record(correction.key, stamps.get(correction.key))
+            for key in fresh_unfilings:
+                if key[0] in landed:
+                    order.record(key, stamps.get(key))
+        # A filing left out for being older than what this session already wrote is
+        # not a failure: the verdict the person last chose is the one on disk, which
+        # is what they asked for. The batch answers as it always did, so the client's
+        # per-book revert keeps reading the same shape.
         status = HTTPStatus.INTERNAL_SERVER_ERROR if failed else HTTPStatus.OK
         data = (json.dumps({"written": written, "failed": failed}) + "\n").encode("utf-8")
         self._send(status, "application/json; charset=utf-8", data)
@@ -758,6 +860,8 @@ class CorrectServer(ThreadingHTTPServer):
         self.thumbs_dir = Path(thumbs_dir)
         self.items = load_corpus(self.sidecars_dir)
         self.write_lock = threading.Lock()
+        # Read and written only under `write_lock`, beside the merge it decides.
+        self.order = FilingOrder()
         super().__init__((host, port), CorrectHandler)
 
     def handle_error(self, request, client_address):

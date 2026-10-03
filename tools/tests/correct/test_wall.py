@@ -540,3 +540,44 @@ def test_a_shift_click_after_an_undo_runs_from_the_item_that_was_clicked(page, w
     click_tile(page, order[3], shift=True)
 
     assert selected_items(page) == [order[2], order[3]]
+
+
+def test_every_write_carries_the_page_s_session_and_a_rising_revision(
+    page, wall, corpus, correct, monkeypatch
+):
+    """The server's ordering is only real if the page stamps what it sends.
+
+    The two writes for one item that the ordering exists for are these: file an
+    item, then re-file it from the filed panel. Nothing else in this file would
+    notice the stamp going missing — a batch without one is a batch the server
+    orders by arrival, which is the whole defect — so it is read off the wire here.
+    """
+    posted = []
+    real = correct.parse_filings
+
+    def watched(payload, items):
+        posted.append(payload)
+        return real(payload, items)
+
+    monkeypatch.setattr(correct, "parse_filings", watched)
+    open_wall(page, wall.url)
+
+    file_as(page, ["scan-a-p000-i000"], "hat")
+    wait_for_flush(page)
+    # Asserted before the second half, so a page that stamps nothing fails as
+    # itself rather than as the refusal an unstampable write earns downstream.
+    assert posted and posted[0].get("session"), posted
+
+    page.keyboard.press(legend(page)["filed"])
+    page.locator("[data-wall-region='filed'] [data-wall-item='scan-a-p000-i000']").click()
+    page.keyboard.press(legend(page)["shoes"])
+    wait_for_flush(page)
+
+    assert len(posted) == 2, posted
+    # One page, one session: two sessions would put the two writes in different
+    # orders and neither could be compared against the other.
+    sessions = {payload.get("session") for payload in posted}
+    assert len(sessions) == 1 and all(sessions), sessions
+    revisions = [payload["filings"][0].get("revision") for payload in posted]
+    assert revisions[1] > revisions[0], revisions
+    assert filed_categories(corpus, "scan-a") == ["shoes"]

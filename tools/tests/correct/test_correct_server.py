@@ -1060,3 +1060,182 @@ def test_filing_one_item_twice_in_one_batch_is_refused(running, corpus):
     assert status == 400
     assert "scan-a-p000-i000" in payload["error"]
     assert read_corrections(corpus.corrections_file("scan-a")) == {}
+
+
+# ------------------------------------- ordering two writes for one item by revision
+
+# The wall's `pagehide` write cannot wait behind the queue it serializes everything
+# else through — a document being torn down is no place to hold a promise — so it
+# goes out as a beacon and can overtake a batch still in flight. When both name one
+# item, the merge is last-wins, and the person's last action would be kept or lost
+# depending on which request the server happened to handle second. So the client
+# stamps every filing with its page's session and a per-item revision, and the order
+# the file ends up in is decided by those rather than by arrival.
+
+SESSION = "page-7f3c"
+
+
+def filed_categories(corpus, stem):
+    return [c.category for c in read_corrections(corpus.corrections_file(stem)).values()]
+
+
+def test_an_older_revision_does_not_replace_a_verdict_already_written(running, corpus):
+    """The race itself: the newer verdict lands first, the older one arrives after.
+
+    That is exactly the shape a beacon overtaking an in-flight batch produces, and
+    the newer verdict is the one the person last chose.
+    """
+    status, _, payload = running.post_json("/api/corrections", {"session": SESSION, "filings": [
+        {"item_id": "scan-a-p000-i000", "category": "shoes", "revision": 2}]})
+    assert status == 200, payload
+
+    status, _, payload = running.post_json("/api/corrections", {"session": SESSION, "filings": [
+        {"item_id": "scan-a-p000-i000", "category": "hat", "revision": 1}]})
+
+    # Not an error: the verdict the person chose last is on disk, which is what
+    # they asked for, and the answer keeps the shape the client reverts from.
+    assert status == 200, payload
+    assert payload["failed"] == []
+    assert filed_categories(corpus, "scan-a") == ["shoes"]
+
+
+def test_a_newer_revision_still_replaces_the_verdict_before_it(running, corpus):
+    """The ordinary case, which the gate must not get in the way of: re-filing works."""
+    running.post_json("/api/corrections", {"session": SESSION, "filings": [
+        {"item_id": "scan-a-p000-i000", "category": "hat", "revision": 1}]})
+    running.post_json("/api/corrections", {"session": SESSION, "filings": [
+        {"item_id": "scan-a-p000-i000", "category": "shoes", "revision": 2}]})
+
+    assert filed_categories(corpus, "scan-a") == ["shoes"]
+
+
+def test_an_older_revision_is_dropped_without_taking_the_batch_with_it(running, corpus):
+    """One stale record in a batch is not a bad batch: the rest is still a judgement."""
+    running.post_json("/api/corrections", {"session": SESSION, "filings": [
+        {"item_id": "scan-a-p000-i000", "category": "shoes", "revision": 4}]})
+
+    status, _, payload = running.post_json("/api/corrections", {"session": SESSION, "filings": [
+        {"item_id": "scan-a-p000-i000", "category": "hat", "revision": 3},
+        {"item_id": "scan-a-p000-i001", "category": "top", "revision": 1},
+    ]})
+
+    assert status == 200, payload
+    filed = {
+        c.bbox.as_tuple(): c.category
+        for c in read_corrections(corpus.corrections_file("scan-a")).values()
+    }
+    assert filed == {(120, 240, 160, 200): "shoes", (400, 240, 180, 320): "top"}
+
+
+def test_a_withdrawal_is_not_undone_by_the_filing_it_overtook(running, corpus):
+    """The undo half of the race: a filing arriving after its own undo must not re-file.
+
+    Undo flushes at once, but the batch it withdraws can still be in flight, so the
+    withdrawal is the one that leaves by beacon and arrives first.
+    """
+    status, _, payload = running.post_json("/api/corrections", {"session": SESSION, "filings": [
+        {"item_id": "scan-a-p000-i000", "unfile": True, "revision": 2}]})
+    assert status == 200, payload
+
+    status, _, payload = running.post_json("/api/corrections", {"session": SESSION, "filings": [
+        {"item_id": "scan-a-p000-i000", "category": "hat", "revision": 1}]})
+
+    assert status == 200, payload
+    assert read_corrections(corpus.corrections_file("scan-a")) == {}
+
+
+def test_an_undo_after_a_filing_still_withdraws_it(running, corpus):
+    """And the ordinary order of those two, which must keep working."""
+    running.post_json("/api/corrections", {"session": SESSION, "filings": [
+        {"item_id": "scan-a-p000-i000", "category": "hat", "revision": 1}]})
+    running.post_json("/api/corrections", {"session": SESSION, "filings": [
+        {"item_id": "scan-a-p000-i000", "unfile": True, "revision": 2}]})
+
+    assert read_corrections(corpus.corrections_file("scan-a")) == {}
+
+
+def test_a_filing_from_another_session_is_written_whatever_its_revision(running, corpus):
+    """The regression this design could introduce, pinned: a reload must still file.
+
+    The client's counter restarts at 1 on every page load, so a comparison that did
+    not account for the session would read every filing of the next sitting as older
+    than the last one of this sitting and silently drop it — a far worse failure than
+    the race it is there to settle.
+    """
+    running.post_json("/api/corrections", {"session": SESSION, "filings": [
+        {"item_id": "scan-a-p000-i000", "category": "shoes", "revision": 9}]})
+
+    status, _, payload = running.post_json("/api/corrections", {"session": "page-after-reload", "filings": [
+        {"item_id": "scan-a-p000-i000", "category": "hat", "revision": 1}]})
+
+    assert status == 200, payload
+    assert filed_categories(corpus, "scan-a") == ["hat"]
+
+
+def test_a_batch_naming_no_session_is_held_to_no_order(running, corpus):
+    """A client that claims no session is not in this race — `curl` at this desk.
+
+    Nothing orders its writes, so ordering them by a number it never sent would
+    drop filings for no reason anybody could see.
+    """
+    running.post_json("/api/corrections", {"session": SESSION, "filings": [
+        {"item_id": "scan-a-p000-i000", "category": "shoes", "revision": 9}]})
+
+    status, _, payload = running.post_json("/api/corrections", {"filings": [
+        {"item_id": "scan-a-p000-i000", "category": "hat"}]})
+
+    assert status == 200, payload
+    assert filed_categories(corpus, "scan-a") == ["hat"]
+
+
+def test_a_revision_that_failed_to_land_does_not_hold_back_an_older_one(running, corpus):
+    """Only a write that reached disk closes the door on an older revision.
+
+    A refused write is reverted on the page, back to whatever an earlier revision
+    put there — and that verdict has to be writable, or the page would be left
+    disagreeing with the file for the rest of the sitting.
+    """
+    # The realistic failure: a hand edit that broke the JSON mid-sitting.
+    corpus.corrections_file("scan-a").write_text("{ not json", encoding="utf-8")
+    status, _, payload = running.post_json("/api/corrections", {"session": SESSION, "filings": [
+        {"item_id": "scan-a-p000-i000", "category": "shoes", "revision": 2}]})
+    assert status == 500
+    assert [entry["source_pdf"] for entry in payload["failed"]] == ["scan-a"]
+
+    corpus.corrections_file("scan-a").unlink()
+    status, _, payload = running.post_json("/api/corrections", {"session": SESSION, "filings": [
+        {"item_id": "scan-a-p000-i000", "category": "hat", "revision": 1}]})
+
+    assert status == 200, payload
+    assert filed_categories(corpus, "scan-a") == ["hat"]
+
+
+@pytest.mark.parametrize("payload, reason", [
+    ({"session": "", "filings": [{"item_id": "scan-a-p000-i000", "category": "hat", "revision": 1}]},
+     "an empty session names no page"),
+    ({"session": 7, "filings": [{"item_id": "scan-a-p000-i000", "category": "hat", "revision": 1}]},
+     "a session is a name, not a number"),
+    ({"session": SESSION, "filings": [{"item_id": "scan-a-p000-i000", "category": "hat"}]},
+     "a session with no revision cannot be ordered"),
+    ({"session": SESSION, "filings": [{"item_id": "scan-a-p000-i000", "category": "hat", "revision": "2"}]},
+     "a revision is a count, not a string"),
+    ({"session": SESSION, "filings": [{"item_id": "scan-a-p000-i000", "category": "hat", "revision": True}]},
+     "`true` is an int to Python and is not a revision"),
+    ({"session": SESSION, "filings": [{"item_id": "scan-a-p000-i000", "category": "hat", "revision": -1}]},
+     "a negative revision counts nothing"),
+    ({"filings": [{"item_id": "scan-a-p000-i000", "category": "hat", "revision": 1}]},
+     "a revision with no session is a stamp nothing can be compared to"),
+])
+def test_a_half_given_stamp_refuses_the_whole_batch(running, corpus, payload, reason):
+    """Ordering is either claimed properly or not claimed at all.
+
+    Accepting a stamp that cannot be compared would leave the client believing its
+    writes were ordered while they landed by arrival, which is the defect this
+    whole mechanism exists to remove.
+    """
+    status, headers, body = running.post_json("/api/corrections", payload)
+
+    assert status == 400, reason
+    assert "error" in body
+    assert headers["Content-Type"].startswith("application/json")
+    assert not corpus.corrections_file("scan-a").exists()

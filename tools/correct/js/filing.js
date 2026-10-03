@@ -60,7 +60,12 @@ export function buildKeyMap(categories, rejections) {
 
 // One batch in flight at a time, the next waiting behind it: two batches for one
 // PDF are safe on the server, but a later batch overtaking an earlier one would
-// let a stale verdict land last.
+// let a stale verdict land last. The chain is no longer the only thing standing
+// between the file and that outcome — every filing carries the page's session and
+// its own revision, and the server leaves out one it has already bettered for
+// that item — because the chain cannot cover the one write that does not wait for it,
+// the beacon `flushOnHide` sends. What the chain still buys is the answer: one
+// request outstanding means one batch's failure to revert and report at a time.
 export function createQueue({
   send,
   sendOnHide,
@@ -136,9 +141,17 @@ export function createQueue({
   }
 
   // The page is going away, so there is no answer to wait for and nothing left to
-  // show a failure on: the one thing that matters is that the bytes leave. A batch
-  // already in flight is not resent — the server has it, and sending it twice
-  // would file the same verdicts again rather than rescue anything.
+  // show a failure on: the one thing that matters is that the bytes leave. It
+  // cannot wait behind `chain` for that reason — a document being torn down is no
+  // place to hold a promise — so this write is the one that can overtake a batch
+  // still in flight, and an item re-filed since that batch went out would then be
+  // decided by whichever request the server handled second. What keeps the newer
+  // verdict is the revision each filing carries: the server applies a filing for
+  // an item only when it is newer than the one it last wrote for that item in this
+  // session, so order is settled by the numbers and not by arrival.
+  //
+  // A batch already in flight is still not resent: the server has it, and sending
+  // it twice would file the same verdicts again rather than rescue anything.
   function flushOnHide() {
     if (timer !== null) {
       clearTimeout(timer);

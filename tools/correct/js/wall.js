@@ -25,6 +25,23 @@ const WRITE_TIMEOUT_MS = 20_000;
 // landed.
 const TIMEOUT_MESSAGE = "the server did not answer in time; those filings may not have been written";
 
+function newSessionId() {
+  // `randomUUID` is secure-context only — loopback counts, but the fallback is
+  // one line and nothing here needs more than distinctness between page loads.
+  const webCrypto = globalThis.crypto;
+  if (webCrypto && typeof webCrypto.randomUUID === "function") return webCrypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+// One identifier per page load, sent with every write so the server can order two
+// writes for one item by the revisions below rather than by which arrived first.
+// Scoped to the page and not global because `state.revisions` restarts at 1 on
+// every reload: compared across page loads, the first filing after a reload would
+// look older than the last one before it and be dropped. One page's lifetime is
+// also exactly the window where two writes for one item can be in flight at once,
+// so the scope costs nothing the mechanism needs.
+const SESSION = newSessionId();
+
 // Tile geometry, owned here and handed to the stylesheet, because the window
 // arithmetic needs the same numbers the layout uses and two copies would drift.
 const TILE_W = 152;
@@ -116,6 +133,13 @@ async function loadCorpus() {
 
 // ---------------------------------------------------------------- the one write
 
+// The bytes both write paths send. Written once rather than per path because the
+// session is what lets the server order them against each other: a path that
+// forgot it would be the one whose writes land by arrival.
+function writeBody(payload) {
+  return JSON.stringify({ session: SESSION, ...payload });
+}
+
 async function postFilings(payload) {
   // The abort is what turns a hang into a failure the queue already knows how to
   // handle: it surfaces as a rejected fetch, so it lands in the same WallError
@@ -128,7 +152,7 @@ async function postFilings(payload) {
       response = await fetch(CORRECTIONS_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: writeBody(payload),
         // Keepalive, because the tab going into the background flushes through here:
         // the answer is still wanted, and the request has to outlive a tab the
         // platform then decides to freeze. A batch is a dozen short records, far
@@ -164,7 +188,7 @@ async function postFilings(payload) {
 }
 
 function beaconFilings(payload) {
-  const body = JSON.stringify(payload);
+  const body = writeBody(payload);
   const blob = new Blob([body], { type: "application/json" });
   if (navigator.sendBeacon && navigator.sendBeacon(CORRECTIONS_URL, blob)) return;
   // No beacon: a keepalive fetch outlives the document too, and there is no answer
@@ -331,6 +355,13 @@ function paintFiledSelection() {
 // The next revision for an item, recorded as the one now standing. Called by
 // every path that writes or deletes `state.filed` after the first load, which is
 // what makes a revision mean "the change this entry made is still the last one".
+//
+// The same number goes out with the filing, which is how the server knows which
+// of two writes for one item is the later one: `pagehide` sends its batch by
+// beacon rather than behind the queue's chain, so a newer verdict can reach the
+// server ahead of an older one still in flight. A revert bumps without sending
+// and a replaced entry never goes out at all, so the numbers the server sees skip
+// — it compares them, it does not count them.
 function bumpRevision(itemId) {
   const next = (state.revisions.get(itemId) || 0) + 1;
   state.revisions.set(itemId, next);
@@ -385,7 +416,10 @@ function fileSelection(action) {
     const previous = state.filed.get(id) || null;
     undo.push({ item_id: id, previous });
     state.filed.set(id, { category: verdict.category || null, rejection: verdict.rejection || null });
-    entries.push(entryFor(id, { item_id: id, ...verdict }, previous, bumpRevision(id)));
+    // One number, on the wire and in the entry: the server orders by what it was
+    // sent, and the revert compares against what the entry holds.
+    const revision = bumpRevision(id);
+    entries.push(entryFor(id, { item_id: id, ...verdict, revision }, previous, revision));
   }
   state.undos.push(undo);
   // The enlarge is opened to judge one item; once that judgement is filed it is
@@ -411,16 +445,20 @@ function undoLast() {
     const current = state.filed.get(itemId) || null;
     if (previous === null) state.filed.delete(itemId);
     else state.filed.set(itemId, previous);
+    // A withdrawal is ordered like a filing: it, too, can be overtaken by the
+    // batch it is undoing, and then the server would re-file what was withdrawn.
+    const revision = bumpRevision(itemId);
     const filing =
       previous === null
-        ? { item_id: itemId, unfile: true }
+        ? { item_id: itemId, unfile: true, revision }
         : {
             item_id: itemId,
             ...(previous.category === null ? { rejection: previous.rejection } : { category: previous.category }),
+            revision,
           };
     // The undo applies `previous` and would go back to `current`, the mirror of the
     // filing it is undoing.
-    entries.push(entryFor(itemId, filing, current, bumpRevision(itemId)));
+    entries.push(entryFor(itemId, filing, current, revision));
   }
   refresh();
   queue.add(entries);
