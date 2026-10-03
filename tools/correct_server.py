@@ -698,7 +698,7 @@ class CorrectHandler(BaseHTTPRequestHandler):
         name = request_hostname(raw) if raw else None
         if name is None:
             return False
-        bound = str(self.server.server_address[0]).partition("%")[0].lower()
+        bound = without_scope(str(self.server.server_address[0])).lower()
         return name in OWN_HOST_NAMES or name == bound
 
     def _guard(self, work) -> None:
@@ -789,22 +789,28 @@ def make_server(
     )
 
 
+def without_scope(address: str) -> str:
+    """An address with its IPv6 zone index removed: `fe80::1%eth0` -> `fe80::1`.
+
+    The kernel hands a link-local address back with the interface it was bound
+    on, and nothing downstream wants it: `ipaddress` will not parse it, and a
+    hostname comparison has nothing to compare it against.
+    """
+    return address.partition("%")[0]
+
+
 def is_wildcard_bind(address: str) -> bool:
     """True when a bound address is INADDR_ANY / in6addr_any, however it was spelled."""
     try:
-        return ipaddress.ip_address(address.partition("%")[0]).is_unspecified
+        return ipaddress.ip_address(without_scope(address)).is_unspecified
     except ValueError:
         return False
 
 
 def is_loopback_bind(address: str) -> bool:
-    """True when a bound address can only be reached from this machine.
-
-    The scope is split off first: a link-local address arrives from the kernel as
-    `fe80::1%eth0`, which is not an address `ipaddress` will parse.
-    """
+    """True when a bound address can only be reached from this machine."""
     try:
-        return ipaddress.ip_address(address.partition("%")[0]).is_loopback
+        return ipaddress.ip_address(without_scope(address)).is_loopback
     except ValueError:
         return False
 
