@@ -15,6 +15,7 @@ import pytest
 from PIL import Image
 
 import build_catalog as build_catalog_cli
+from dressup_pipeline.bodies import BodyError
 from dressup_pipeline.catalog import (
     DEFAULT_BODY_HEIGHT_PX,
     ITEM_CEILING_PX,
@@ -266,3 +267,51 @@ def test_the_report_tables_each_source_pdf_and_names_the_bound(tmp_path, sidecar
 
 def test_the_default_target_body_height_is_the_documented_one():
     assert DEFAULT_BODY_HEIGHT_PX == 1000
+
+
+# -- a --group build asks only its own groups about dpi ------------------------
+
+# A second book, extracted at the default rather than the 72 dpi the fantasy
+# items beside it carry. It is labelled and otherwise catalogue-ready, so only
+# the group filter keeps it out of the builds below.
+KNIGHT = dict(LABELLED, group="knight", dpi=DEFAULT_DPI, source_pdf="knight-book-1.pdf")
+
+
+def test_a_filtered_build_ignores_the_dpi_of_a_group_it_left_out(tmp_path, sidecar_corpus, corrections_dir):
+    """The scale block describes this build, so a book it never writes has no say."""
+    root, _ = sidecar_corpus([{"item_id": "a", **AT_72}, {"item_id": "k", **KNIGHT}])
+    assets = tmp_path / "assets"
+
+    build_catalog(root, assets, groups={"fantasy"}, corrections_dir=corrections_dir)
+
+    catalog = json.loads((assets / "catalog.json").read_text())
+    assert [item["id"] for item in catalog["items"]] == ["a"]
+    assert catalog["scale"]["source_dpi"] == 72
+
+
+def test_a_filtered_build_cuts_bodies_at_its_own_groups_dpi(tmp_path, sidecar_corpus, corrections_dir, body_book):
+    """The bodies path scopes the same way; otherwise the fix is still reachable."""
+    root, _ = sidecar_corpus([{"item_id": "a", **AT_72}, {"item_id": "k", **KNIGHT}])
+    assets = tmp_path / "assets"
+
+    build_with_bodies(root, assets, corrections_dir, body_book, groups={"fantasy"})
+
+    catalog = json.loads((assets / "catalog.json").read_text())
+    bodies = json.loads((assets / "bodies.json").read_text())
+    assert catalog["scale"] == bodies["scale"]
+    assert catalog["scale"]["source_dpi"] == 72
+
+
+def test_a_filtered_build_still_refuses_a_disagreement_inside_its_own_groups(
+    tmp_path, sidecar_corpus, corrections_dir
+):
+    """Narrowing the question must not retire it: one book, two dpis, still refused."""
+    root, _ = sidecar_corpus([
+        {"item_id": "a", **AT_72},
+        {"item_id": "odd", **LABELLED, "dpi": 150},
+    ])
+
+    with pytest.raises(BodyError) as excinfo:
+        build_catalog(root, tmp_path / "assets", groups={"fantasy"}, corrections_dir=corrections_dir)
+
+    assert "odd" in str(excinfo.value)

@@ -411,12 +411,15 @@ def build_catalog(
     if listed_groups:
         assert bodies is not None
         _refuse_unbodied_groups(bodies.list_path, set(summary.by_group), listed_groups)
-        cuts, source_dpi = build_bodies(entries, bodies.source_root, sidecar_root, bodies.triage_dir)
+        cuts, source_dpi = build_bodies(entries, bodies.source_root, sidecar_root, bodies.triage_dir, groups)
         for cut in cuts:
             summary.row(cut.group, cut.source_pdf).body_heights.append(cut.image.height)
     if source_dpi is None:
-        # The scale block names one DPI, so the sidecars have to agree on one.
-        source_dpi = shared_dpi(sidecar_root)
+        # The scale block names one DPI, so the sidecars have to agree on one —
+        # the sidecars *this* build draws on. A group it filtered out never
+        # reaches the factor or the block, so a book extracted at another DPI is
+        # no reason to refuse a selection that agrees with itself.
+        source_dpi = shared_dpi(sidecar_root, groups)
 
     decision = compute_scale(
         body_heights=[cut.image.height for cut in cuts],

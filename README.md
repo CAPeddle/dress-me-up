@@ -39,9 +39,15 @@ tools/.venv/bin/python tools/make_smoke_pdf.py           # stand-in for a real s
 tools/.venv/bin/python tools/triage_pages.py content/source/<Set>/*.pdf   # rotation + page type per page
 tools/.venv/bin/python tools/extract_pdf.py content/source/<Set>/*.pdf --triage
 tools/.venv/bin/python tools/classify_and_qa.py --min-quality 0.90
-tools/.venv/bin/python tools/build_catalog.py --min-quality 0.90 --group fantasy --body-height 1000
+tools/.venv/bin/python tools/correct_server.py       # the labelling pass -> tools/corrections/
+tools/.venv/bin/python tools/build_catalog.py --group fantasy --body-height 1000
 cd tools && .venv/bin/python -m pytest                   # pipeline + web tests
 ```
+
+The labelling pass is the one step that is a person, not a batch:
+`correct_server.py` serves every extracted item on loopback for you to file in
+a browser, and the build admits exactly the items carrying one of those
+labels — so skipping it builds an empty catalog and exits non-zero.
 
 Real scans go under `content/source/<Set>/` — `Fantasy`, `Knight` and so on —
 because the classifier reads an item's group from the containing folder first

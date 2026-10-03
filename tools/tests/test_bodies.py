@@ -67,11 +67,12 @@ def save_pdf(path, *pages):
     return path
 
 
-def write_sidecar(root, item_id, dpi):
+def write_sidecar(root, item_id, dpi, group=None):
     root.mkdir(parents=True, exist_ok=True)
     data = {
         "item_id": item_id, "source_pdf": "items.pdf", "page": 0,
         "bbox": {"x": 0, "y": 0, "w": 10, "h": 10}, "image": f"{item_id}.png", "dpi": dpi,
+        "group": group,
     }
     (root / f"{item_id}.sidecar.json").write_text(json.dumps(data), encoding="utf-8")
 
@@ -263,6 +264,27 @@ def test_shared_dpi_falls_back_to_the_extractor_default_with_no_sidecars(tmp_pat
     (tmp_path / "sidecars").mkdir()
 
     assert shared_dpi(tmp_path / "sidecars") == DEFAULT_DPI
+
+
+def test_shared_dpi_asks_only_the_groups_a_filtered_build_selected(tmp_path):
+    """A group the build leaves out is not part of the scale it writes."""
+    write_sidecar(tmp_path / "sidecars", "fantasy-a", 72, group="fantasy")
+    write_sidecar(tmp_path / "sidecars", "knight-a", 300, group="knight")
+
+    assert shared_dpi(tmp_path / "sidecars", groups={"fantasy"}) == 72
+    assert shared_dpi(tmp_path / "sidecars", groups={"knight"}) == 300
+    with pytest.raises(BodyError):
+        shared_dpi(tmp_path / "sidecars", groups={"fantasy", "knight"})
+
+
+def test_render_dpi_scopes_the_unrecorded_dpi_refusal_to_the_selected_groups(tmp_path):
+    """Scoping must not let a legacy sidecar inside the selection through."""
+    write_sidecar(tmp_path / "sidecars", "legacy", 0, group="fantasy")
+    write_sidecar(tmp_path / "sidecars", "knight-a", 300, group="knight")
+
+    assert render_dpi(tmp_path / "sidecars", groups={"knight"}) == 300
+    with pytest.raises(BodyError, match="extract_pdf.py"):
+        render_dpi(tmp_path / "sidecars", groups={"fantasy"})
 
 
 # -- the whole stage ----------------------------------------------------------

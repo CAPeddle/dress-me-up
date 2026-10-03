@@ -29,7 +29,7 @@ from PIL import Image
 from scipy import ndimage
 
 from .extract import DEFAULT_DPI, render_page
-from .models import GROUPS, BBox, iter_sidecars
+from .models import GROUPS, BBox, Sidecar, iter_sidecars
 from .orientation import find_figure_regions
 from .triage import Manifest, manifest_path, rotate_page
 
@@ -114,20 +114,47 @@ def resolve_pdf(entry: BodyEntry, source_root: Path) -> Path:
 # -- scale ------------------------------------------------------------------
 
 
-def shared_dpi(sidecar_root: Path) -> int:
-    """The one DPI every sidecar under the root was extracted at.
+def _in_build(sidecar_root: Path, groups: set[str] | None) -> list[Sidecar]:
+    """The sidecars one build draws on: its selected groups, or the whole corpus.
+
+    A `--group` build writes nothing from the groups it filtered out, so the DPI
+    they were extracted at is none of its business — asking the whole corpus
+    failed a selected group that agreed with itself just because another book
+    had been extracted at a different DPI. The test is `sidecar.group in
+    groups`, the same one the catalogue applies to the items it writes, so the
+    two cannot drift; an empty or absent set means no filter in either place.
+    """
+    walked = [sidecar for _, sidecar in iter_sidecars(sidecar_root)]
+    if not groups:
+        return walked
+    return [sidecar for sidecar in walked if sidecar.group in groups]
+
+
+def _scope(sidecar_root: Path, groups: set[str] | None) -> str:
+    """How to name the sidecars an error is about, so a filtered build reads right."""
+    if not groups:
+        return f"sidecars under {sidecar_root}"
+    return f"{'/'.join(sorted(groups))} sidecars under {sidecar_root}"
+
+
+def shared_dpi(sidecar_root: Path, groups: set[str] | None = None) -> int:
+    """The one DPI every sidecar this build draws on was extracted at.
+
+    `groups` narrows that to a `--group` build's own selection; without it the
+    build is the whole corpus, which is what every caller before the filter
+    existed asked for.
 
     An unrecorded DPI (0, from a sidecar older than the field) is a value like
-    any other: a corpus that mixes it with a real value cannot be trusted to
+    any other: a build that mixes it with a real value cannot be trusted to
     share one scale, and the odd sidecars are named so they can be re-extracted.
-    A corpus where *nothing* records one agrees on 0, and 0 is reported as it
-    stands — it is a true statement about the corpus, and the catalog's scale
+    A build where *nothing* records one agrees on 0, and 0 is reported as it
+    stands — it is a true statement about those sidecars, and the catalog's scale
     block says so. `render_dpi` is the caller that cannot accept it.
     With no sidecars at all there is nothing to agree with, and the extractor's
     default stands in.
     """
     by_dpi: dict[int, list[str]] = {}
-    for _, sidecar in iter_sidecars(sidecar_root):
+    for sidecar in _in_build(sidecar_root, groups):
         by_dpi.setdefault(sidecar.dpi, []).append(sidecar.item_id)
     if not by_dpi:
         return DEFAULT_DPI
@@ -138,12 +165,12 @@ def shared_dpi(sidecar_root: Path) -> int:
         f"{item_id} (dpi {dpi})" for dpi, ids in sorted(by_dpi.items()) if dpi != majority for item_id in ids
     )
     raise BodyError(
-        f"sidecars under {sidecar_root} disagree on dpi: most are {majority}, but {odd}; "
+        f"{_scope(sidecar_root, groups)} disagree on dpi: most are {majority}, but {odd}; "
         "re-extract the odd ones so every image in the build shares one scale"
     )
 
 
-def render_dpi(sidecar_root: Path) -> int:
+def render_dpi(sidecar_root: Path, groups: set[str] | None = None) -> int:
     """`shared_dpi`, but for the caller that is about to render pages with it.
 
     Reporting an unrecorded DPI as 0 is honest; rendering at it is not. PyMuPDF
@@ -152,11 +179,11 @@ def render_dpi(sidecar_root: Path) -> int:
     and nothing downstream would notice. The build refuses instead and says
     which stage puts the number back.
     """
-    dpi = shared_dpi(sidecar_root)
+    dpi = shared_dpi(sidecar_root, groups)
     if dpi == 0:
-        unrecorded = sum(1 for _, sidecar in iter_sidecars(sidecar_root) if sidecar.dpi == 0)
+        unrecorded = sum(1 for sidecar in _in_build(sidecar_root, groups) if sidecar.dpi == 0)
         raise BodyError(
-            f"none of the {unrecorded} sidecars under {sidecar_root} record the dpi they were "
+            f"none of the {unrecorded} {_scope(sidecar_root, groups)} record the dpi they were "
             "extracted at, so there is no scale to render the bodies at; "
             "re-extract them with tools/extract_pdf.py"
         )
@@ -214,13 +241,18 @@ def build_bodies(
     source_root: Path,
     sidecar_root: Path,
     triage_dir: Path,
+    groups: set[str] | None = None,
 ) -> tuple[list[BodyCut], int]:
-    """Cut every body in the list, in list order; return them with the DPI used."""
-    # An empty list renders nothing, so it asks only what the corpus agrees on;
+    """Cut every body in the list, in list order; return them with the DPI used.
+
+    `groups` is the build's group selection, and only narrows which sidecars are
+    asked for the DPI — the list decides which bodies are cut, as it always has.
+    """
+    # An empty list renders nothing, so it asks only what the build agrees on;
     # anything that will actually be rendered has to have a real DPI.
     if not entries:
-        return [], shared_dpi(sidecar_root)
-    dpi = render_dpi(sidecar_root)
+        return [], shared_dpi(sidecar_root, groups)
+    dpi = render_dpi(sidecar_root, groups)
 
     cuts: list[BodyCut] = []
     # Both caches are per distinct PDF: the recursive glob behind `resolve_pdf`
