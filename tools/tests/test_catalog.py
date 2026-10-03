@@ -178,6 +178,36 @@ def test_an_unfinished_item_is_still_skipped_for_being_unfinished(tmp_path, side
     assert summary.skipped == {"not classified": 1, "QA not run": 1}
 
 
+def test_a_label_on_an_item_the_build_skips_is_matched_not_reported_as_lost(tmp_path, sidecar_corpus, corrections_dir):
+    """A correction is matched the moment its item is found, before eligibility.
+
+    Every label here is on a cutout that exists and has not moved — the build
+    just has its own reasons for leaving the item out. Reporting any of them as
+    unmatched would send somebody to re-file judgement on a cutout that is still
+    exactly where they left it (R9), so the two halves of the labelling job stay
+    separate: these are skips, not lost work.
+    """
+    root, _ = sidecar_corpus([
+        {"item_id": "raw", "correction": "hat"},
+        {"item_id": "spurned", **dict(LABELLED, correction=None), "rejection": "bad_crop"},
+        {"item_id": "elsewhere", **dict(LABELLED, group="knight")},
+        {"item_id": "in", **LABELLED},
+    ])
+
+    summary = build_catalog(
+        root, tmp_path / "assets", groups={"fantasy"}, corrections_dir=corrections_dir
+    )
+
+    assert summary.written == 1
+    assert summary.skipped == {
+        "not classified": 1,
+        "rejected by a person: bad_crop": 1,
+        "group not selected": 1,
+    }
+    assert summary.unmatched == []
+    assert "unmatched corrections" not in summary.as_report()
+
+
 def test_missing_image_is_skipped_rather_than_crashing_the_build(tmp_path, sidecar_corpus, corrections_dir):
     root, _ = sidecar_corpus([{"item_id": "a", **LABELLED}])
     (root / "a.png").unlink()

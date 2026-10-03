@@ -47,6 +47,7 @@ from .corrections import (
     Correction,
     CorrectionKey,
     load_corrections,
+    match,
     sidecar_key,
 )
 from .models import CatalogItem, Sidecar, iter_sidecars
@@ -321,18 +322,25 @@ def _gather(
 ) -> list[_Candidate]:
     """Pass one: which Items are in, and how big they are on the page."""
     candidates: list[_Candidate] = []
-    matched: set[CorrectionKey] = set()
-    for path, sidecar in iter_sidecars(sidecar_root):
+
+    # `match` owns what "unmatched" means, and the repair queue resolves through
+    # the same function — hand-rolling the bookkeeping here let the two tools
+    # drift on the one thing both exist to be trusted on. It is given the whole
+    # corpus, not the candidates, which is also the matched-before-eligibility
+    # rule: a correction on an item the pipeline has not finished classifying
+    # still found its item, and calling it unmatched would send somebody to
+    # re-label a cutout that never moved.
+    #
+    # The walk is materialised rather than run twice: re-walking would read every
+    # sidecar off disk a second time, and the corpus is small enough (hundreds)
+    # that holding it costs nothing.
+    walked = list(iter_sidecars(sidecar_root))
+    summary.unmatched = match(corrections, (sidecar for _, sidecar in walked)).unmatched
+
+    for path, sidecar in walked:
         summary.total += 1
 
-        key = sidecar_key(sidecar)
-        correction = corrections.get(key)
-        # Matched before eligibility, not after: a correction on an item the
-        # pipeline has not finished classifying still found its item, and calling
-        # it unmatched would send somebody to re-label a cutout that never moved.
-        if correction is not None:
-            matched.add(key)
-
+        correction = corrections.get(sidecar_key(sidecar))
         reason = _eligible(sidecar, correction, groups)
         if reason:
             summary.skip(reason)
@@ -356,9 +364,6 @@ def _gather(
         if _would_qa_exclude(sidecar, min_quality):
             summary.admitted_over_qa += 1
 
-    summary.unmatched = [
-        correction for key, correction in corrections.items() if key not in matched
-    ]
     return candidates
 
 
