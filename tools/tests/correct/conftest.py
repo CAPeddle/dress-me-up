@@ -413,20 +413,24 @@ class HeldWrite:
     leans on, so the real write can be swapped for one that announces itself and
     then waits to be let go.
 
-    Only the first write is held. Every later one runs for real, so a test can
-    stall one batch and still watch the next reach disk.
+    One write is held and every other one runs for real, so a test can stall one
+    batch and still watch the next reach disk. `hold` picks which: the first by
+    default, and a later one where the batch under test is not the first thing the
+    sitting writes — an undo only has its own request once the filing it withdraws
+    has landed, because the client posts one batch at a time.
     """
 
-    def __init__(self, real):
+    def __init__(self, real, hold: int = 1):
         self._real = real
         self._entered = threading.Event()
         self._go = threading.Event()
         self._error: Exception | None = None
         self.calls = 0
+        self.hold = hold
 
     def __call__(self, path, corrections):
         self.calls += 1
-        if self.calls > 1:
+        if self.calls != self.hold:
             return self._real(path, corrections)
         self._entered.set()
         # Bounded, so a test that forgets to release fails as a test rather than

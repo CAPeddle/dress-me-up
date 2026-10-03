@@ -457,6 +457,47 @@ def test_a_failed_write_does_not_put_back_a_verdict_a_newer_one_replaced(page, w
     assert filed_view.locator("[data-wall-bucket='shoes'] [data-wall-item='scan-a-p000-i000']").count() == 1
 
 
+def test_a_failed_undo_does_not_re_file_an_item_a_later_undo_withdrew(page, wall, corpus, held_write):
+    """The other half of that: two withdrawals of one item are two separate entries.
+
+    A withdrawal's revert restores what the item was filed as, and "unfiled" is
+    what every withdrawal applies — so an entry has to recognise its own state by
+    something other than the verdict it put there. Undo once with the request still
+    in flight, file again, undo again, and the first undo's failure must not re-file
+    an item the second one has already withdrawn from the page and from the file.
+    """
+    # The undo's write, not the filing's: the client posts one batch at a time, so
+    # an undo only gets its own request once the filing it withdraws has landed.
+    held_write.hold = 2
+    open_wall(page, wall.url)
+
+    file_as(page, ["scan-a-p000-i000"], "hat")
+    wait_for_flush(page)
+    assert filed_categories(corpus, "scan-a") == ["hat"]
+
+    page.keyboard.press(legend(page)["undo"])
+    held_write.wait_until_in_flight()
+    assert tile(page, "scan-a-p000-i000").count() == 1
+
+    file_as(page, ["scan-a-p000-i000"], "shoes")
+    assert tile(page, "scan-a-p000-i000").count() == 0
+    page.keyboard.press(legend(page)["undo"])
+    assert tile(page, "scan-a-p000-i000").count() == 1
+    # The held withdrawal plus the second one waiting behind it: the queue is one
+    # chain, so both really are unsettled here.
+    assert status(page, "queued") >= 2, "both batches have gone already; the test proves nothing"
+
+    held_write.release(error=CorrectionError("the corrections file could not be written"))
+    wait_for_flush(page)
+
+    # The second withdrawal reached disk, so the file holds no verdict for the item.
+    assert read_corrections(corpus.corrections_file("scan-a")) == {}
+    # The page has to say the same. Filed here is a verdict nobody could find in the
+    # file, on an item that has left the wall and will never be offered again.
+    assert tile(page, "scan-a-p000-i000").count() == 1
+    assert status(page, "filed") == 0
+
+
 def test_a_write_that_never_answers_gives_up_rather_than_stalling_the_queue(page, wall, corpus, held_write):
     """The queue is one chain, so a request that hangs rather than erroring strands
     every batch behind it — with the items already gone from the wall and nothing

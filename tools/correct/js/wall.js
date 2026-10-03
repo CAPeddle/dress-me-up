@@ -59,6 +59,10 @@ const state = {
   picked: new Set(),    // the selection inside the filed view
   pickedAnchor: null,
   undos: [],            // one entry per filing action: what each item was before
+  // item_id -> how many verdicts this page has applied to it. Every action that
+  // touches `filed` takes the next number and hands it to the entry it builds, so
+  // an entry can tell whether its own change is still the one standing.
+  revisions: new Map(),
   failure: null,        // a write the person has not been told about yet
 };
 
@@ -324,11 +328,21 @@ function paintFiledSelection() {
 
 // ---------------------------------------------------------------- filing
 
-// `applied` is the verdict this entry put into `state.filed`, `previous` what was
-// there before it. Both are needed because an item can be filed again while its
-// first batch is still in flight — from the filed panel, which is exactly what
-// that panel is for — and then two entries are carrying reverts for one item.
-function entryFor(itemId, filing, previous, applied) {
+// The next revision for an item, recorded as the one now standing. Called by
+// every path that writes or deletes `state.filed` after the first load, which is
+// what makes a revision mean "the change this entry made is still the last one".
+function bumpRevision(itemId) {
+  const next = (state.revisions.get(itemId) || 0) + 1;
+  state.revisions.set(itemId, next);
+  return next;
+}
+
+// `revision` is the one this entry's own action produced, `previous` the verdict
+// that was there before it. Both are needed because an item can be filed again
+// while its first batch is still in flight — from the filed panel, which is
+// exactly what that panel is for — and then two entries are carrying reverts for
+// one item.
+function entryFor(itemId, filing, previous, revision) {
   const item = state.byId.get(itemId);
   return {
     item_id: itemId,
@@ -338,15 +352,21 @@ function entryFor(itemId, filing, previous, applied) {
     // reverted filing is then a no-op on both the page and the file, which is the
     // right answer rather than a second thing to explain.
     //
-    // Compare-and-swap rather than a plain restore: only the entry whose verdict is
-    // still the one standing has anything to undo. A revert that fired regardless
+    // Compare-and-swap rather than a plain restore: only the entry whose own change
+    // is still the one standing has anything to undo. A revert that fired regardless
     // would put a stale verdict back over the newer one the person chose — and that
     // newer one is on its way to disk, so the page would then disagree with the file
-    // and the item would be filed a second time. Identity is the comparison because
-    // every filing stores a freshly built verdict object, so no two entries can
-    // ever be holding the same one.
+    // and the item would be filed a second time. The comparison is the revision and
+    // not the verdict this entry applied, because a withdrawal applies no verdict at
+    // all: two undos of one item both leave it unfiled, so by verdict they are
+    // indistinguishable, and the first one's failure would re-file an item the second
+    // one has already withdrawn — from the page and from the file. A revision is
+    // distinct per action whether that action filed or withdrew.
     revert: () => {
-      if ((state.filed.get(itemId) || null) !== applied) return;
+      if (state.revisions.get(itemId) !== revision) return;
+      // The restore is a change like any other, so it takes the next revision too:
+      // this entry has had its say and no entry is left whose revision matches.
+      bumpRevision(itemId);
       if (previous === null) state.filed.delete(itemId);
       else state.filed.set(itemId, previous);
     },
@@ -364,9 +384,8 @@ function fileSelection(action) {
   for (const id of ids) {
     const previous = state.filed.get(id) || null;
     undo.push({ item_id: id, previous });
-    const applied = { category: verdict.category || null, rejection: verdict.rejection || null };
-    state.filed.set(id, applied);
-    entries.push(entryFor(id, { item_id: id, ...verdict }, previous, applied));
+    state.filed.set(id, { category: verdict.category || null, rejection: verdict.rejection || null });
+    entries.push(entryFor(id, { item_id: id, ...verdict }, previous, bumpRevision(id)));
   }
   state.undos.push(undo);
   // The enlarge is opened to judge one item; once that judgement is filed it is
@@ -401,7 +420,7 @@ function undoLast() {
           };
     // The undo applies `previous` and would go back to `current`, the mirror of the
     // filing it is undoing.
-    entries.push(entryFor(itemId, filing, current, previous));
+    entries.push(entryFor(itemId, filing, current, bumpRevision(itemId)));
   }
   refresh();
   queue.add(entries);
