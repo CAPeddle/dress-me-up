@@ -328,6 +328,21 @@ def test_malformed_json_names_the_file(tmp_path):
         read_corrections(path)
 
 
+def test_a_file_that_is_not_utf8_names_the_file_like_a_syntax_error_does(tmp_path):
+    """Syntactically whole JSON, but one byte an editor wrote in Latin-1.
+
+    A decode failure is not a `JSONDecodeError` and not an `OSError`, so unwrapped
+    it slips through the per-PDF net the labelling server catches on and takes the
+    whole batch down with it — and a whole-batch failure puts verdicts that were
+    already written back on the wall as unfiled.
+    """
+    path = tmp_path / f"20260509081050{CORRECTIONS_SUFFIX}"
+    path.write_bytes(b'{"corrections": [], "note": "caf\xe9"}\n')
+
+    with pytest.raises(CorrectionError, match=f"20260509081050{CORRECTIONS_SUFFIX}"):
+        read_corrections(path)
+
+
 def test_a_pdf_with_no_corrections_file_is_ordinary(tmp_path):
     assert read_corrections(tmp_path / f"never-labelled{CORRECTIONS_SUFFIX}") == {}
 
@@ -435,16 +450,19 @@ def test_a_failed_temp_write_leaves_nothing_behind_either(tmp_path, monkeypatch)
 def test_a_stem_is_taken_off_a_scanners_filename_exactly_once(tmp_path):
     """The path is built from a stem as readily as from a filename.
 
-    A stem may contain dots: scanners name files by timestamp and
-    `2026-09-28 14.08.32.pdf` is an ordinary one. Stripping at the last dot
-    regardless would route the filing to a file whose name disagrees with the
-    records inside it. A name ending `.pdf.pdf` is the case that shows why the
-    stem is taken once here rather than guessed at again further down.
+    On a filename `Path.stem` agrees with `pdf_stem`, so the assertions that end
+    in `.pdf` discriminate nothing. The one that does is the already-stemmed
+    input: a stem may hold dots — scanners name files by timestamp — and
+    `Path("album.2").stem` is `album`, which would route a book's filing to a
+    file whose name disagrees with the records inside it. Stemming twice was the
+    bug. A name ending `.pdf.pdf` is the case that shows why the stem is taken
+    once here rather than guessed at again further down.
     """
     assert pdf_stem("album.2.pdf") == "album.2"
     assert pdf_stem(Path("/scans/album.2.pdf")) == "album.2"
     assert pdf_stem("2026-09-28 14.08.32.pdf") == "2026-09-28 14.08.32"
     assert pdf_stem("report.pdf.pdf") == "report.pdf"
+    assert pdf_stem("album.2") == "album.2"
     assert corrections_path(tmp_path, pdf_stem("album.2.pdf")).name == f"album.2{CORRECTIONS_SUFFIX}"
 
 

@@ -224,10 +224,14 @@ def sidecar_key(sidecar: Sidecar) -> CorrectionKey:
 def pdf_stem(source_pdf: Path | str) -> str:
     """The stem a correction is filed under, taken off a scan's filename.
 
-    Only a real `.pdf` suffix comes off. `Path.stem` would strip at the last dot
-    whatever it found, and these stems hold dots: scanners name files by
-    timestamp and `2026-09-28 14.08.32.pdf` is an ordinary one, which `Path.stem`
-    turns into `2026-09-28 14.08`.
+    Only a real `.pdf` suffix comes off. On a name ending `.pdf`, `Path.stem`
+    agrees — it strips the final suffix and nothing more. Where it differs is a
+    value that is *already* a stem, and these stems hold dots: scanners name
+    files by timestamp, so `Path("2026-09-28 14.08.32").stem` is
+    `2026-09-28 14.08`. Stemming twice
+    was the bug this replaced, and a dotted stem handed back through here survives
+    it. The stem is still taken off once, at identity, because `report.pdf` is
+    both a filename and a stem and no rule here can tell which one a caller meant.
     """
     name = Path(source_pdf).name
     return name[:-4] if name.lower().endswith(".pdf") else name
@@ -257,8 +261,18 @@ def read_corrections(path: Path) -> dict[CorrectionKey, Correction]:
     """
     if not path.exists():
         return {}
+    # The read is split from the parse because a decode failure is neither a
+    # `JSONDecodeError` nor an `OSError`, and those two are what the labelling
+    # server catches to isolate one book's failure from the batch. Unwrapped, one
+    # bad byte in one file fails every PDF in the pass, and the client's
+    # whole-batch revert puts verdicts that were already written back on the wall
+    # as unfiled — the loss the per-PDF isolation exists to prevent.
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise CorrectionError(f"{path}: not valid UTF-8: {exc}") from exc
+    try:
+        data = json.loads(text)
     except json.JSONDecodeError as exc:
         raise CorrectionError(f"{path}: invalid JSON: {exc}") from exc
 
