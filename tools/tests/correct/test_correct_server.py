@@ -65,6 +65,42 @@ def test_a_filing_lands_in_the_correction_file(running, corpus):
     )
 
 
+# A scanner app's own naming: a timestamp, whose time carries dots. `Path.stem`
+# truncates it to `2026-09-28 14.08`, and a corrections file whose own name
+# disagrees with the records inside it is refused record by record on the way back
+# in, so a sitting's labelling was gone from the moment it was written (cb00d53).
+# Every other fixture stem here is dot-free, and `CorpusItem.stem` derives the
+# stem itself, so this is the call site the bug shipped behind rather than the
+# function the unit tests pin.
+DOTTED_STEM = "2026-09-28 14.08.32"
+
+
+def test_a_dotted_pdf_stem_files_under_its_whole_name(corpus, server_factory):
+    corpus.add("dotted-p000-i000", stem=DOTTED_STEM, bbox=(300, 500, 140, 180), category="hat")
+    running = server_factory(corpus)
+
+    status, _, payload = running.post_json(
+        "/api/corrections",
+        {"filings": [{"item_id": "dotted-p000-i000", "category": "shoes"}]},
+    )
+
+    assert status == 200, payload
+    assert payload["failed"] == []
+    assert [entry["source_pdf"] for entry in payload["written"]] == [DOTTED_STEM]
+
+    assert not (corpus.corrections / "2026-09-28 14.08.corrections.json").exists()
+    on_disk = read_corrections(corpus.corrections_file(DOTTED_STEM))
+    assert [correction.category for correction in on_disk.values()] == ["shoes"]
+    assert next(iter(on_disk.values())).source_pdf == DOTTED_STEM
+
+    # And the server finds it again: the manifest re-derives the stem to locate the
+    # file, so a filing written under a truncated name reads back as never filed.
+    manifest = running.get_json("/api/corpus")
+    assert manifest_item(manifest, "dotted-p000-i000")["filed"] == {
+        "category": "shoes", "rejection": None,
+    }
+
+
 def test_a_write_touches_the_one_correction_file_and_nothing_else(running, corpus):
     before = snapshot(corpus.root)
 
@@ -697,9 +733,12 @@ def test_nothing_is_written_to_the_terminal_while_serving(capfd, corpus, server_
 
 # The first four are caught by name; the rest spell the same two wildcard
 # addresses in ways no literal set can enumerate, so only the address the socket
-# actually bound can refuse them.
+# actually bound can refuse them. The last two are the IPv4-mapped spelling,
+# which Linux binds to every IPv4 interface while `ipaddress` does not call it
+# unspecified, so the post-bind check has to normalise before it judges.
 @pytest.mark.parametrize("host", [
     "0.0.0.0", "::", "*", "", "0", "0.0", "00.0.0.0", "::0", "0:0:0:0:0:0:0:0",
+    "::ffff:0.0.0.0", "::ffff:0:0",
 ])
 def test_wildcard_host_is_refused(correct, corpus, monkeypatch, capsys, host):
     monkeypatch.setattr(correct, "CORRECT_PORT", 0)  # never touch the tool's own port
@@ -782,9 +821,9 @@ def test_a_non_loopback_host_is_refused(correct, corpus, monkeypatch, capsys):
     assert all(server.socket.fileno() == -1 for server in created)
 
 
-@pytest.mark.parametrize("host", ["127.0.0.1", "::1"])
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1", "::ffff:127.0.0.1"])
 def test_either_spelling_of_loopback_still_starts(correct, corpus, monkeypatch, capsys, host):
-    """Both are this machine and only this machine, so both are served."""
+    """All three are this machine and only this machine, so all three start."""
     monkeypatch.setattr(correct, "CORRECT_PORT", 0)
     bound = []
     real_make_server = correct.make_server
@@ -807,6 +846,23 @@ def test_either_spelling_of_loopback_still_starts(correct, corpus, monkeypatch, 
 
     assert code == 0, capsys.readouterr().err
     assert bound[0].server_address[0] == host
+
+
+def test_a_mapped_address_is_judged_as_the_address_it_maps_to(correct):
+    """Pinned as a unit, because `ipaddress` alone answers this differently per version.
+
+    `ip_address("::ffff:127.0.0.1").is_loopback` is False on CPython 3.12 and True
+    on 3.14, and `tools/pyproject.toml` allows anything from 3.10 up. The one guard
+    between this write endpoint and the home network must not change its verdict
+    with the interpreter, so both predicates resolve the mapped form to the IPv4
+    address the kernel will actually bind and judge that.
+    """
+    assert correct.is_loopback_bind("::ffff:127.0.0.1") is True
+    assert correct.is_wildcard_bind("::ffff:0.0.0.0") is True
+    # The mapping is not a blanket pass: a mapped home-network address is still
+    # neither loopback nor a wildcard.
+    assert correct.is_loopback_bind(f"::ffff:{DOCUMENTATION_ADDRESS}") is False
+    assert correct.is_wildcard_bind(f"::ffff:{DOCUMENTATION_ADDRESS}") is False
 
 
 def test_the_host_defaults_to_loopback(correct, corpus, monkeypatch, capsys):

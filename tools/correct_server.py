@@ -799,10 +799,27 @@ def without_scope(address: str) -> str:
     return address.partition("%")[0]
 
 
+def as_bound_address(address: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """A bound address parsed, with an IPv4-mapped form resolved to what it maps to.
+
+    The kernel binds `::ffff:0.0.0.0` to every IPv4 interface and `::ffff:127.0.0.1`
+    to loopback, but `ipaddress` judges the mapped spelling on its own terms: it
+    does not call the first unspecified, and whether it calls the second loopback
+    depends on the interpreter (False on CPython 3.12, True on 3.14, and
+    `pyproject.toml` allows 3.10 up). Both predicates below are the only guard
+    between this tool's one write endpoint and the home network, so they judge the
+    address the socket actually holds — one verdict per address, on every
+    supported interpreter, whichever way it was spelled.
+    """
+    parsed = ipaddress.ip_address(without_scope(address))
+    mapped = getattr(parsed, "ipv4_mapped", None)
+    return parsed if mapped is None else mapped
+
+
 def is_wildcard_bind(address: str) -> bool:
     """True when a bound address is INADDR_ANY / in6addr_any, however it was spelled."""
     try:
-        return ipaddress.ip_address(without_scope(address)).is_unspecified
+        return as_bound_address(address).is_unspecified
     except ValueError:
         return False
 
@@ -810,7 +827,7 @@ def is_wildcard_bind(address: str) -> bool:
 def is_loopback_bind(address: str) -> bool:
     """True when a bound address can only be reached from this machine."""
     try:
-        return ipaddress.ip_address(without_scope(address)).is_loopback
+        return as_bound_address(address).is_loopback
     except ValueError:
         return False
 

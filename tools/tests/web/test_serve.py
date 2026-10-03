@@ -33,9 +33,12 @@ def snapshot(*roots):
 
 # The first four are caught by name; the rest spell the same two wildcard
 # addresses in ways no literal set can enumerate, so only the address the socket
-# actually bound can refuse them.
+# actually bound can refuse them. The last two are the IPv4-mapped spelling,
+# which Linux binds to every IPv4 interface while `ipaddress` does not call it
+# unspecified, so the post-bind check has to normalise before it judges.
 @pytest.mark.parametrize("host", [
     "0.0.0.0", "::", "*", "", "0", "0.0", "00.0.0.0", "::0", "0:0:0:0:0:0:0:0",
+    "::ffff:0.0.0.0", "::ffff:0:0",
 ])
 def test_wildcard_host_is_refused(serve, monkeypatch, capsys, host):
     monkeypatch.setattr(serve, "SHARED_PORT", 0)  # never touch the shared port
@@ -191,6 +194,36 @@ def test_writes_are_refused_and_nothing_is_written(site, method):
         assert status == 405, (method, path)
         assert headers.get("Allow") == "GET, HEAD"
     assert snapshot(WEB_DIR, FIXTURE_ASSETS) == before
+
+
+def test_a_silent_client_is_not_held_for_the_whole_session(serve, site, monkeypatch, capfd):
+    """A connection that never sends a request line is reaped, not parked on a thread.
+
+    HTTP/1.1 keep-alive on a threading server with unbounded daemon threads means
+    a client on the home network that connects and then says nothing blocks its
+    thread inside ``readline()`` for the rest of the session, and nothing reaps
+    it. The handler's ``timeout`` is the only thing that bounds that, so the value
+    is pinned here and then exercised.
+    """
+    # Pinned as a value first: `BaseRequestHandler.timeout` is None, and inheriting
+    # it is the defect, so the attribute has to be this class's own.
+    assert "timeout" in vars(serve.StaticHandler)
+    assert serve.StaticHandler.timeout == 30
+    # Scaled rather than replaced, so the suite never waits the real 30 s and the
+    # check still rides on the real value: with no timeout this is `None / 100`,
+    # which raises instead of quietly passing.
+    monkeypatch.setattr(serve.StaticHandler, "timeout", serve.StaticHandler.timeout / 100)
+
+    client = socket.create_connection(("127.0.0.1", site.port), timeout=5)
+    try:
+        # An empty read is the server having closed it; a held connection would
+        # instead hit this socket's own 5 s timeout and raise.
+        assert client.recv(1) == b""
+    finally:
+        client.close()
+    # The timeout goes through `log_error`, which `BaseHTTPRequestHandler` routes
+    # into this file's no-op `log_message`: a reaped client is not an access log.
+    assert capfd.readouterr() == ("", "")
 
 
 @pytest.mark.parametrize("path", [

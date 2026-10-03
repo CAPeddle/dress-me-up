@@ -90,6 +90,11 @@ class StaticHandler(BaseHTTPRequestHandler):
     server_version = "DressMeUp/1"
     sys_version = ""
     protocol_version = "HTTP/1.1"
+    # Keep-alive on a threading server with unbounded daemon threads: a client on
+    # the home network that connects and never sends a request line would hold its
+    # thread inside `readline()` for the rest of the session, and nothing reaps it.
+    # `handle_one_request` turns the timeout into `close_connection` instead.
+    timeout = 30
 
     def log_message(self, fmt, *args):  # no access log
         pass
@@ -177,9 +182,16 @@ def make_server(host: str, port: int, web_dir: Path | str, assets_dir: Path | st
 def is_wildcard_bind(address: str) -> bool:
     """True when a bound address is INADDR_ANY / in6addr_any, however it was spelled."""
     try:
-        return ipaddress.ip_address(address.partition("%")[0]).is_unspecified
+        bound = ipaddress.ip_address(address.partition("%")[0])
     except ValueError:
         return False
+    # An IPv4-mapped address is judged as the address it maps to. Linux binds
+    # `::ffff:0.0.0.0` to every IPv4 interface, but `ipaddress` does not call the
+    # mapped spelling unspecified, so asking it directly let the game come up on
+    # the whole house while this printed a non-wildcard address as its own and
+    # claimed the wildcard had been refused.
+    mapped = getattr(bound, "ipv4_mapped", None)
+    return (bound if mapped is None else mapped).is_unspecified
 
 
 def url_for(host: str, port: int) -> str:
